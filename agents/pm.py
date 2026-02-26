@@ -1,11 +1,13 @@
-import google.generativeai as genai
+from google import genai
 import os
 import json
 import re
 from dotenv import load_dotenv
 
 load_dotenv()
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+client = genai.Client(
+    api_key=os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+)
 
 def _flatten_file_tree(tree: dict, prefix: str = "") -> dict:
     """중첩된 dict 구조의 file_tree를 flat한 {파일경로: 설명} 형태로 변환."""
@@ -21,7 +23,6 @@ def _flatten_file_tree(tree: dict, prefix: str = "") -> dict:
     return result
 
 def pm_agent(state: dict):
-    model = genai.GenerativeModel('gemini-2.5-flash-lite')
 
     prompt = f"""
 당신은 MVP 전문 기획자(PM)입니다.
@@ -52,7 +53,10 @@ def pm_agent(state: dict):
 
     response = None
     try:
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(
+            model='gemini-2.5-flash-lite',
+            contents=prompt
+        )
         raw = response.text.strip()
 
         # ```json ... ``` 마크다운 블록 제거
