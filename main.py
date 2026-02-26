@@ -1,5 +1,6 @@
 from agents.pm import pm_agent
 from agents.dev import dev_agent
+from agents.qc import qc_agent
 import os
 
 def run_team():
@@ -74,8 +75,22 @@ def run_team():
 
     print(f"\n📁 코드가 '{output_dir}/' 디렉토리에 저장되었습니다.")
 
+    # Phase 3: QC Agent
+    print("\n" + "-" * 60)
+    print("🔍 [Phase 3/4] QC Agent - 코드 검증 및 자동 수정 중...")
+    print("-" * 60)
+
+    state = qc_agent(state)
+
+    if state["current_step"] == "ERROR":
+        print(f"\n❌ 오류 발생: {state['feedback']}")
+        return
+
+    print("\n" + state["feedback"])
+
     print("\n" + "=" * 60)
-    print("✨ 다음 단계: QC Agent 구현 예정")
+    print("🎉 MVP 생성 완료!")
+    print(f"📂 결과물 위치: {output_dir}/")
     print("=" * 60)
 
 if __name__ == "__main__":
