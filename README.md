@@ -12,8 +12,8 @@ ChatDev 아키텍처를 참고하여 Google Gemini에 최적화된 자동화 개
 
 ### 현재 구현 단계
 - ✅ **Phase 1: PM Agent** - 기획서(PRD) 및 파일 구조 자동 생성
-- 🔜 **Phase 2: Developer Agent** - 실제 코드 생성 (FE/BE)
-- 🔜 **Phase 3: QC Agent** - 코드 리뷰 및 오류 검증
+- ✅ **Phase 2: Developer Agent** - 실제 코드 생성 (FE/BE)
+- ✅ **Phase 3: QC Agent** - 코드 리뷰 및 오류 검증 (자동 수정 루프)
 - 🔜 **Phase 4: Deployer** - 패키징 및 배포
 
 ---
@@ -58,6 +58,8 @@ python main.py
 **출력 결과:**
 - 📋 PRD (기능 명세)
 - 📁 File Tree (생성할 파일 구조)
+- 💻 실제 동작 코드 (`output/<project_name>/`)
+- 🔍 QC 리포트 (자동 수정 포함)
 
 ---
 
@@ -99,8 +101,9 @@ agent-factory/
 
 ## 🛠️ 다음 단계
 
-- [ ] Developer Agent 구현 (코드 자동 생성)
-- [ ] QC Agent 구현 (에러 검증 및 피드백 루프)
+- [x] Developer Agent 구현 (코드 자동 생성)
+- [x] QC Agent 구현 (에러 검증 및 피드백 루프)
+- [ ] Deployer 구현 (패키징 및 배포)
 - [ ] LangGraph 통합 (순환 워크플로우)
 - [ ] 실시간 미리보기 기능
 
