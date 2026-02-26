@@ -1,14 +1,15 @@
-import google.generativeai as genai
+from google import genai
 import os
 import json
 import re
 from dotenv import load_dotenv
 
 load_dotenv()
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+client = genai.Client(
+    api_key=os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+)
 
 def dev_agent(state: dict):
-    model = genai.GenerativeModel('gemini-2.5-flash-lite')
 
     prd = state.get("prd", "")
     file_tree = state.get("file_tree", {})
@@ -77,7 +78,10 @@ def dev_agent(state: dict):
 
         response = None
         try:
-            response = model.generate_content(prompt)
+            response = client.models.generate_content(
+                model='gemini-2.5-flash-lite',
+                contents=prompt
+            )
             result = json.loads(response.text)
             codes[file_path] = result.get("code", "")
 

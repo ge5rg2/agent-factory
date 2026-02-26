@@ -1,4 +1,4 @@
-import google.generativeai as genai
+from google import genai
 import os
 import ast
 import json
@@ -7,7 +7,9 @@ import subprocess
 from dotenv import load_dotenv
 
 load_dotenv()
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+client = genai.Client(
+    api_key=os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+)
 
 MAX_FIX_ITERATIONS = 2
 
@@ -147,7 +149,7 @@ def _fix_python_imports(output_dir: str, codes: dict) -> list:
 
 # ── Gemini 코드 리뷰 & 수정 ───────────────────────────────────────────────────
 
-def _gemini_review_and_fix(model, prd: str, current_codes: dict, syntax_errors: list) -> dict:
+def _gemini_review_and_fix(prd: str, current_codes: dict, syntax_errors: list) -> dict:
     """전체 코드베이스를 Gemini로 리뷰하고, 이슈와 수정 코드 반환."""
     files_block = "\n".join(
         f"\n--- {path} ---\n{code}" for path, code in current_codes.items()
@@ -187,7 +189,10 @@ def _gemini_review_and_fix(model, prd: str, current_codes: dict, syntax_errors: 
 수정할 문제가 전혀 없으면 issues를 빈 배열로, fixed_files를 빈 객체로 반환하세요.
 """
 
-    response = model.generate_content(prompt)
+    response = client.models.generate_content(
+        model='gemini-2.5-flash-lite',
+        contents=prompt
+    )
     raw = response.text.strip()
     if raw.startswith("```"):
         raw = re.sub(r'^```(?:json)?\n?', '', raw)
@@ -197,7 +202,7 @@ def _gemini_review_and_fix(model, prd: str, current_codes: dict, syntax_errors: 
 
 # ── README 생성 ───────────────────────────────────────────────────────────────
 
-def _generate_readme(model, state: dict, output_dir: str, codes: dict) -> None:
+def _generate_readme(state: dict, output_dir: str, codes: dict) -> None:
     """QC 완료 후 output 디렉토리에 실행법이 담긴 README.md 생성."""
 
     file_tree_block = "\n".join(f"- {path}: {desc}" for path, desc in state.get("file_tree", {}).items())
@@ -231,7 +236,10 @@ README.md에 반드시 포함할 항목:
 """
 
     try:
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(
+            model='gemini-2.5-flash-lite',
+            contents=prompt
+        )
         readme_content = response.text.strip()
         # 혹시 ```markdown 블록으로 감싸진 경우 제거
         if readme_content.startswith("```"):
@@ -249,8 +257,6 @@ README.md에 반드시 포함할 항목:
 # ── QC Agent 메인 ─────────────────────────────────────────────────────────────
 
 def qc_agent(state: dict) -> dict:
-    model = genai.GenerativeModel('gemini-2.5-flash-lite')
-
     output_dir = os.path.join("output", state["project_name"])
     codes = dict(state.get("codes", {}))
     prd = state.get("prd", "")
@@ -289,7 +295,7 @@ def qc_agent(state: dict) -> dict:
 
         # 3. Gemini 코드 리뷰
         try:
-            result = _gemini_review_and_fix(model, prd, current_codes, syntax_errors)
+            result = _gemini_review_and_fix(prd, current_codes, syntax_errors)
         except (json.JSONDecodeError, Exception) as e:
             print(f"  ⚠️  Gemini 리뷰 파싱 실패: {e}")
             break
@@ -318,7 +324,7 @@ def qc_agent(state: dict) -> dict:
             # 이슈도 없고 수정도 없으면 조기 종료
             if not issues and not syntax_errors:
                 print(f"\n  📝 README.md 생성 중...")
-                _generate_readme(model, state, output_dir, codes)
+                _generate_readme(state, output_dir, codes)
                 state.update({
                     "codes": codes,
                     "feedback": summary or "모든 파일 QC 통과",
@@ -329,7 +335,7 @@ def qc_agent(state: dict) -> dict:
 
     # ── README 생성 & 최종 리포트 ─────────────────────────────────────────────
     print(f"\n  📝 README.md 생성 중...")
-    _generate_readme(model, state, output_dir, codes)
+    _generate_readme(state, output_dir, codes)
 
     final_errors = _run_syntax_checks(output_dir, codes)
 
