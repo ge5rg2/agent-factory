@@ -12,6 +12,7 @@ def run_team():
     # 초기 상태 설정
     state = {
         "idea": user_idea,
+        "project_name": "",
         "prd": "",
         "file_tree": {},
         "codes": {},
@@ -59,14 +60,15 @@ def run_team():
         lines = len(state['codes'][file_path].splitlines())
         print(f"  ✅ {file_path} ({lines} lines)")
 
-    # 생성된 코드를 output/<아이디어명>/ 디렉토리에 저장
-    idea_dirname = user_idea.strip().replace(" ", "_")
-    output_dir = os.path.join("output", idea_dirname)
+    # 생성된 코드를 output/<project_name>/ 디렉토리에 저장
+    output_dir = os.path.join("output", state["project_name"])
     os.makedirs(output_dir, exist_ok=True)
 
     for file_path, code in state['codes'].items():
         full_path = os.path.join(output_dir, file_path)
-        os.makedirs(os.path.dirname(full_path), exist_ok=True)
+        parent_dir = os.path.dirname(full_path)
+        if parent_dir:
+            os.makedirs(parent_dir, exist_ok=True)
         with open(full_path, "w", encoding="utf-8") as f:
             f.write(code)
 
