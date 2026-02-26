@@ -118,6 +118,57 @@ def _gemini_review_and_fix(model, prd: str, current_codes: dict, syntax_errors: 
     return json.loads(raw)
 
 
+# ── README 생성 ───────────────────────────────────────────────────────────────
+
+def _generate_readme(model, state: dict, output_dir: str, codes: dict) -> None:
+    """QC 완료 후 output 디렉토리에 실행법이 담긴 README.md 생성."""
+
+    file_tree_block = "\n".join(f"- {path}: {desc}" for path, desc in state.get("file_tree", {}).items())
+    files_block = "\n".join(f"\n--- {path} ---\n{code}" for path, code in codes.items())
+
+    prompt = f"""
+당신은 기술 문서 작성 전문가입니다.
+아래 정보를 바탕으로 이 프로젝트를 처음 보는 개발자가 바로 실행할 수 있는 README.md를 작성해주세요.
+
+=== 기획서 (PRD) ===
+{state.get("prd", "")}
+
+=== 파일 구조 ===
+{file_tree_block}
+
+=== 전체 코드 ===
+{files_block}
+
+README.md에 반드시 포함할 항목:
+1. 프로젝트 제목 및 한 줄 설명
+2. 기술 스택 (언어, 프레임워크, DB 등)
+3. 디렉토리 구조 (트리 형태)
+4. 사전 요구사항 (Python 버전, node 여부 등)
+5. 설치 및 실행 방법
+   - 백엔드: 가상환경 생성, 패키지 설치(requirements 명시), 서버 실행 명령어
+   - 프론트엔드: 별도 빌드 불필요한 경우 브라우저 열기 방법, 또는 serve 명령어
+6. 주요 API 엔드포인트 (있는 경우)
+7. 실행 확인 방법 (접속 URL 등)
+
+반드시 마크다운 형식으로만 답변하세요. JSON이나 다른 형식은 사용하지 마세요.
+"""
+
+    try:
+        response = model.generate_content(prompt)
+        readme_content = response.text.strip()
+        # 혹시 ```markdown 블록으로 감싸진 경우 제거
+        if readme_content.startswith("```"):
+            readme_content = re.sub(r'^```(?:markdown)?\n?', '', readme_content)
+            readme_content = re.sub(r'\n?```$', '', readme_content.strip())
+
+        readme_path = os.path.join(output_dir, "README.md")
+        with open(readme_path, "w", encoding="utf-8") as f:
+            f.write(readme_content)
+        print(f"  📄 README.md 생성 완료 → {readme_path}")
+    except Exception as e:
+        print(f"  ⚠️  README.md 생성 실패: {e}")
+
+
 # ── QC Agent 메인 ─────────────────────────────────────────────────────────────
 
 def qc_agent(state: dict) -> dict:
@@ -184,6 +235,8 @@ def qc_agent(state: dict) -> dict:
             print(f"  ✅ 추가 수정 필요 없음")
             # 이슈도 없고 수정도 없으면 조기 종료
             if not issues and not syntax_errors:
+                print(f"\n  📝 README.md 생성 중...")
+                _generate_readme(model, state, output_dir, codes)
                 state.update({
                     "codes": codes,
                     "feedback": summary or "모든 파일 QC 통과",
@@ -192,7 +245,10 @@ def qc_agent(state: dict) -> dict:
                 return state
             break  # 이슈는 있었지만 이미 직전 iteration에서 수정 완료
 
-    # ── 최종 리포트 ──────────────────────────────────────────────────────────
+    # ── README 생성 & 최종 리포트 ─────────────────────────────────────────────
+    print(f"\n  📝 README.md 생성 중...")
+    _generate_readme(model, state, output_dir, codes)
+
     final_errors = _run_syntax_checks(output_dir, codes)
 
     report_lines = ["=== QC 최종 리포트 ==="]
