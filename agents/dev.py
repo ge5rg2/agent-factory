@@ -54,9 +54,20 @@ def dev_agent(state: dict):
 
 요구사항:
 1. 실제로 실행 가능한 완전한 코드를 작성하세요
-2. 다른 파일들과의 import/연동이 올바르게 되도록 작성하세요
-3. 주석은 최소화하고 코드 자체가 명확하도록 작성하세요
-4. 백엔드는 FastAPI, 프론트엔드는 순수 HTML/CSS/JS로 작성하세요
+2. 주석은 최소화하고 코드 자체가 명확하도록 작성하세요
+3. 백엔드는 FastAPI, 프론트엔드는 순수 HTML/CSS/JS로 작성하세요
+4. [중요] 같은 패키지 내 모듈 import 시 반드시 상대경로 import 사용
+   - ✅ 올바른 예: `from .models import Todo`, `from .database import get_db`
+   - ❌ 잘못된 예: `from models import Todo`, `from database import get_db`
+5. [중요] backend/__init__.py는 내용 없는 빈 파일로 생성하세요
+6. [중요] requirements.txt 작성 시 실제 사용하는 패키지와 버전 범위 명시
+   - 예: `fastapi>=0.100.0`, `uvicorn>=0.20.0`, `sqlalchemy>=2.0.0`
+7. [중요] Pydantic v2 문법 사용 (v1 문법 사용 금지)
+   - ✅ `model_config = ConfigDict(from_attributes=True)`
+   - ❌ `class Config: orm_mode = True`
+8. [중요] SQLAlchemy 2.0 문법 사용
+   - ✅ `from sqlalchemy.orm import DeclarativeBase` + `class Base(DeclarativeBase): pass`
+   - ❌ `from sqlalchemy.ext.declarative import declarative_base` + `Base = declarative_base()`
 
 반드시 아래 JSON 형식으로만 답변하세요:
 {{

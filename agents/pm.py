@@ -40,6 +40,8 @@ def pm_agent(state: dict):
     "project_name": "todo_list_app",
     "prd": "기획 상세 내용 (핵심 기능, 기술 스택, 주요 컴포넌트 포함) - 반드시 문자열로",
     "file_tree": {{
+        "requirements.txt": "백엔드 Python 패키지 의존성 목록",
+        "backend/__init__.py": "Python 패키지 초기화 파일 (빈 파일)",
         "backend/main.py": "FastAPI 메인 서버 - 라우팅 및 CORS 설정",
         "backend/models.py": "데이터 모델 정의",
         "frontend/index.html": "메인 페이지 UI",

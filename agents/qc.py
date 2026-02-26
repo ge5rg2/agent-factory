@@ -68,6 +68,83 @@ def _run_syntax_checks(output_dir: str, codes: dict) -> list:
     return errors
 
 
+# ── Python import 경로 사전 보정 ──────────────────────────────────────────────
+
+def _fix_python_imports(output_dir: str, codes: dict) -> list:
+    """bare intra-package import를 relative import로 변환하고 __init__.py를 자동 생성.
+
+    예: `from models import X`  →  `from .models import X`
+        `import database`       →  `from . import database`
+    """
+    fixed = []
+
+    # 디렉토리별 sibling 모듈 이름 수집 (같은 디렉토리의 .py 파일들)
+    dir_to_modules: dict = {}
+    for file_path in codes:
+        if not file_path.endswith(".py"):
+            continue
+        dir_name = os.path.dirname(file_path)
+        if not dir_name:
+            continue
+        module_name = os.path.splitext(os.path.basename(file_path))[0]
+        if module_name != "__init__":
+            dir_to_modules.setdefault(dir_name, set()).add(module_name)
+
+    # 각 Python 파일에서 bare import → relative import 변환
+    for file_path in list(codes.keys()):
+        if not file_path.endswith(".py"):
+            continue
+        dir_name = os.path.dirname(file_path)
+        if not dir_name:
+            continue
+        siblings = dir_to_modules.get(dir_name, set())
+        if not siblings:
+            continue
+
+        code = codes[file_path]
+        new_lines = []
+        changed = False
+
+        for line in code.splitlines():
+            # `from models import X` → `from .models import X`
+            m = re.match(r'^(from\s+)(\w+)(\s+import\s+.+)$', line)
+            if m and m.group(2) in siblings:
+                new_lines.append(f"{m.group(1)}.{m.group(2)}{m.group(3)}")
+                changed = True
+                continue
+
+            # `import models` → `from . import models`
+            m2 = re.match(r'^(import\s+)(\w+)(.*)$', line)
+            if m2 and m2.group(2) in siblings:
+                new_lines.append(f"from . import {m2.group(2)}")
+                changed = True
+                continue
+
+            new_lines.append(line)
+
+        if changed:
+            new_code = "\n".join(new_lines)
+            codes[file_path] = new_code
+            full_path = os.path.join(output_dir, file_path)
+            if os.path.exists(full_path):
+                with open(full_path, "w", encoding="utf-8") as f:
+                    f.write(new_code)
+            fixed.append(file_path)
+
+    # Python 패키지 디렉토리에 __init__.py 자동 생성
+    for dir_name in dir_to_modules:
+        init_path = f"{dir_name}/__init__.py"
+        full_init = os.path.join(output_dir, init_path)
+        if not os.path.exists(full_init):
+            os.makedirs(os.path.dirname(full_init), exist_ok=True)
+            with open(full_init, "w", encoding="utf-8") as f:
+                f.write("")
+            codes[init_path] = ""
+            fixed.append(f"{init_path} (신규 생성)")
+
+    return fixed
+
+
 # ── Gemini 코드 리뷰 & 수정 ───────────────────────────────────────────────────
 
 def _gemini_review_and_fix(model, prd: str, current_codes: dict, syntax_errors: list) -> dict:
@@ -181,6 +258,11 @@ def qc_agent(state: dict) -> dict:
     if not codes:
         state.update({"feedback": "검증할 코드가 없습니다.", "current_step": "ERROR"})
         return state
+
+    # 0. Python import 경로 사전 보정 (bare → relative, __init__.py 생성)
+    import_fixes = _fix_python_imports(output_dir, codes)
+    if import_fixes:
+        print(f"  🔧 Import 경로 사전 보정 ({len(import_fixes)}건): {', '.join(import_fixes)}")
 
     all_issues = []
     total_fixed_files = set()
