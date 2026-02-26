@@ -73,53 +73,150 @@ def _run_syntax_checks(output_dir: str, codes: dict) -> list:
 # ── Python import 경로 사전 보정 ──────────────────────────────────────────────
 
 def _fix_python_imports(output_dir: str, codes: dict) -> list:
-    """bare intra-package import를 relative import로 변환하고 __init__.py를 자동 생성.
+    """모든 intra-project import를 절대경로로 변환하고 __init__.py를 자동 생성.
 
-    예: `from models import X`  →  `from .models import X`
-        `import database`       →  `from . import database`
+    처리 패턴:
+      bare:     `from models import X`    → `from backend.models import X`
+      relative: `from .models import X`   → `from backend.api.v1.endpoints.models import X` (해석 후 올바른 절대경로)
+      wrong depth: `from ...models import X` → `from backend.models import X`
+      pkg rel:  `from . import endpoints` → `from backend.api.v1 import endpoints`
     """
     fixed = []
 
-    # 디렉토리별 sibling 모듈 이름 수집 (같은 디렉토리의 .py 파일들)
-    dir_to_modules: dict = {}
+    # 1. name → absolute dotted path 맵 구성 (모듈 + 패키지 모두)
+    name_to_abs: dict = {}
+
+    # 모든 디렉토리 경로 수집 (패키지 추적용)
+    all_dirs: set = set()
+    for file_path in codes:
+        normalized = file_path.replace("\\", "/")
+        if "/" in normalized:
+            parts = normalized.split("/")
+            for i in range(1, len(parts)):
+                all_dirs.add("/".join(parts[:i]))
+
+    # 패키지(디렉토리) 등록 — 먼저 추가해서 모듈이 같은 이름이면 모듈이 덮어씀
+    for dir_path in sorted(all_dirs):
+        pkg_name = dir_path.split("/")[-1]
+        abs_dotted = dir_path.replace("/", ".")
+        if pkg_name not in name_to_abs:
+            name_to_abs[pkg_name] = abs_dotted
+
+    # 모듈(.py 파일) 등록 — 같은 이름이면 모듈이 패키지를 덮어씀
     for file_path in codes:
         if not file_path.endswith(".py"):
             continue
-        dir_name = os.path.dirname(file_path)
-        if not dir_name:
-            continue
         module_name = os.path.splitext(os.path.basename(file_path))[0]
-        if module_name != "__init__":
-            dir_to_modules.setdefault(dir_name, set()).add(module_name)
+        if module_name == "__init__":
+            continue
+        abs_dotted = file_path.replace("\\", "/").replace("/", ".")[:-3]
+        name_to_abs[module_name] = abs_dotted
 
-    # 각 Python 파일에서 bare import → relative import 변환
+    # 2. 모든 중간 디렉토리에 __init__.py 자동 생성
+    for dir_path in sorted(all_dirs):
+        init_path = f"{dir_path}/__init__.py"
+        full_init = os.path.join(output_dir, init_path)
+        if not os.path.exists(full_init):
+            os.makedirs(os.path.dirname(full_init), exist_ok=True)
+            with open(full_init, "w", encoding="utf-8") as f:
+                f.write("")
+            if init_path not in codes:
+                codes[init_path] = ""
+            fixed.append(f"{init_path} (신규 생성)")
+
+    # 3. 각 Python 파일의 import 구문 절대경로로 보정
     for file_path in list(codes.keys()):
-        if not file_path.endswith(".py"):
-            continue
-        dir_name = os.path.dirname(file_path)
-        if not dir_name:
-            continue
-        siblings = dir_to_modules.get(dir_name, set())
-        if not siblings:
+        if not file_path.endswith(".py") or "/" not in file_path:
             continue
 
         code = codes[file_path]
         new_lines = []
         changed = False
 
+        # 현재 파일 디렉토리의 절대 dotted path (상대 import 해석용)
+        dir_abs = os.path.dirname(file_path).replace("\\", "/").replace("/", ".")
+        dir_parts = dir_abs.split(".") if dir_abs else []
+
         for line in code.splitlines():
-            # `from models import X` → `from .models import X`
-            m = re.match(r'^(from\s+)(\w+)(\s+import\s+.+)$', line)
-            if m and m.group(2) in siblings:
-                new_lines.append(f"{m.group(1)}.{m.group(2)}{m.group(3)}")
-                changed = True
+
+            # ── Case 1: 점(dot) 포함 상대 import ──────────────────────────────
+            # 패턴 A: `from .X import Y`  (dots 바로 뒤에 모듈/패키지명)
+            m_rel = re.match(r'^(\s*from\s+)(\.+)(\w+)(\s+import\s+.+)$', line)
+            if m_rel:
+                dots = m_rel.group(2)
+                target_name = m_rel.group(3)
+                import_tail = m_rel.group(4)
+                dot_count = len(dots)
+                levels_up = dot_count - 1
+
+                if target_name in name_to_abs:
+                    # 알려진 프로젝트 내 모듈/패키지 → 절대경로로 교체
+                    new_line = f"from {name_to_abs[target_name]}{import_tail}"
+                else:
+                    # 미등록 이름 → dot 개수 기반으로 절대경로 계산만 수행
+                    if levels_up == 0:
+                        base_parts = dir_parts
+                    elif levels_up < len(dir_parts):
+                        base_parts = dir_parts[:-levels_up]
+                    else:
+                        base_parts = []
+                    abs_target = ".".join(base_parts + [target_name]) if base_parts else target_name
+                    new_line = f"from {abs_target}{import_tail}"
+
+                new_lines.append(new_line)
+                if new_line.strip() != line.strip():
+                    changed = True
                 continue
 
-            # `import models` → `from . import models`
-            m2 = re.match(r'^(import\s+)(\w+)(.*)$', line)
-            if m2 and m2.group(2) in siblings:
-                new_lines.append(f"from . import {m2.group(2)}")
-                changed = True
+            # 패턴 B: `from . import X`  (dots 뒤에 모듈명 없이 바로 import)
+            m_rel_pkg = re.match(r'^(\s*from\s+)(\.+)(\s+import\s+.+)$', line)
+            if m_rel_pkg:
+                dots = m_rel_pkg.group(2)
+                import_tail = m_rel_pkg.group(3)
+                dot_count = len(dots)
+                levels_up = dot_count - 1
+
+                if levels_up == 0:
+                    base_pkg = dir_abs
+                elif levels_up < len(dir_parts):
+                    base_pkg = ".".join(dir_parts[:-levels_up])
+                else:
+                    base_pkg = ""
+
+                if base_pkg:
+                    new_line = f"from {base_pkg}{import_tail}"
+                else:
+                    new_line = line  # 해석 불가, 그대로 유지
+                new_lines.append(new_line)
+                if new_line.strip() != line.strip():
+                    changed = True
+                continue
+
+            # ── Case 2: bare `from X import Y` → 절대경로 ─────────────────────
+            m_bare = re.match(r'^(\s*from\s+)(\w+)(\s+import\s+.+)$', line)
+            if m_bare and m_bare.group(2) in name_to_abs:
+                target_name = m_bare.group(2)
+                import_tail = m_bare.group(3)
+                new_line = f"from {name_to_abs[target_name]}{import_tail}"
+                new_lines.append(new_line)
+                if new_line.strip() != line.strip():
+                    changed = True
+                continue
+
+            # ── Case 3: bare `import X` → `from pkg import X` ─────────────────
+            m_bare_imp = re.match(r'^(\s*import\s+)(\w+)(.*)$', line)
+            if m_bare_imp and m_bare_imp.group(2) in name_to_abs:
+                target_name = m_bare_imp.group(2)
+                abs_path = name_to_abs[target_name]
+                pkg_parts = abs_path.split(".")
+                if len(pkg_parts) > 1:
+                    pkg = ".".join(pkg_parts[:-1])
+                    new_line = f"from {pkg} import {target_name}{m_bare_imp.group(3)}"
+                else:
+                    new_line = line  # 최상위 모듈은 그대로 유지
+                new_lines.append(new_line)
+                if new_line.strip() != line.strip():
+                    changed = True
                 continue
 
             new_lines.append(line)
@@ -132,17 +229,6 @@ def _fix_python_imports(output_dir: str, codes: dict) -> list:
                 with open(full_path, "w", encoding="utf-8") as f:
                     f.write(new_code)
             fixed.append(file_path)
-
-    # Python 패키지 디렉토리에 __init__.py 자동 생성
-    for dir_name in dir_to_modules:
-        init_path = f"{dir_name}/__init__.py"
-        full_init = os.path.join(output_dir, init_path)
-        if not os.path.exists(full_init):
-            os.makedirs(os.path.dirname(full_init), exist_ok=True)
-            with open(full_init, "w", encoding="utf-8") as f:
-                f.write("")
-            codes[init_path] = ""
-            fixed.append(f"{init_path} (신규 생성)")
 
     return fixed
 
@@ -173,6 +259,9 @@ def _gemini_review_and_fix(prd: str, current_codes: dict, syntax_errors: list) -
 검토 항목:
 1. 문법 오류 및 런타임 에러 가능성
 2. import 누락 또는 잘못된 경로
+   - [중요] 반드시 절대경로 import 사용 (`from backend.models import X` 형식)
+   - 상대경로 import (from .X, from ..X, from ...X) 는 절대 사용하지 마세요
+   - bare import (from models import X) 도 사용하지 마세요
 3. 프론트엔드-백엔드 API 연동 불일치 (URL, 메서드, 필드명)
 4. 기획서 대비 핵심 기능 누락
 
@@ -265,7 +354,7 @@ def qc_agent(state: dict) -> dict:
         state.update({"feedback": "검증할 코드가 없습니다.", "current_step": "ERROR"})
         return state
 
-    # 0. Python import 경로 사전 보정 (bare → relative, __init__.py 생성)
+    # 0. Python import 경로 사전 보정 (상대/bare → 절대경로, 중간 __init__.py 생성)
     import_fixes = _fix_python_imports(output_dir, codes)
     if import_fixes:
         print(f"  🔧 Import 경로 사전 보정 ({len(import_fixes)}건): {', '.join(import_fixes)}")

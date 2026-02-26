@@ -57,10 +57,15 @@ def dev_agent(state: dict):
 1. 실제로 실행 가능한 완전한 코드를 작성하세요
 2. 주석은 최소화하고 코드 자체가 명확하도록 작성하세요
 3. 백엔드는 FastAPI, 프론트엔드는 순수 HTML/CSS/JS로 작성하세요
-4. [중요] 같은 패키지 내 모듈 import 시 반드시 상대경로 import 사용
-   - ✅ 올바른 예: `from .models import Todo`, `from .database import get_db`
-   - ❌ 잘못된 예: `from models import Todo`, `from database import get_db`
-5. [중요] backend/__init__.py는 내용 없는 빈 파일로 생성하세요
+4. [중요] 프로젝트 내 모듈 import 시 반드시 절대경로 import 사용 (상대경로 import 절대 금지)
+   - ✅ 올바른 예: `from backend.models import Customer`, `from backend.database import get_db`
+   - ✅ 올바른 예: `from backend.api.v1.endpoints import customer`
+   - ❌ 잘못된 예: `from models import Customer` (bare import)
+   - ❌ 잘못된 예: `from .models import Customer` (상대경로)
+   - ❌ 잘못된 예: `from ...models import Customer` (상대경로)
+   - 실행 컨텍스트: 프로젝트 루트에서 `uvicorn backend.main:app` 으로 실행하므로 최상위 패키지명(예: backend)부터 시작하는 절대경로 사용
+5. [중요] 모든 Python 패키지 디렉토리(하위 디렉토리 포함)에 빈 __init__.py 파일 생성
+   - 예: backend/__init__.py, backend/api/__init__.py, backend/api/v1/__init__.py, backend/api/v1/endpoints/__init__.py
 6. [중요] requirements.txt 작성 시 실제 사용하는 패키지와 버전 범위 명시
    - 예: `fastapi>=0.100.0`, `uvicorn>=0.20.0`, `sqlalchemy>=2.0.0`
 7. [중요] Pydantic v2 문법 사용 (v1 문법 사용 금지)
