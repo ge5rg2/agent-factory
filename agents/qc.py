@@ -70,6 +70,180 @@ def _run_syntax_checks(output_dir: str, codes: dict) -> list:
     return errors
 
 
+# ── requirements.txt 유효성 검증 ─────────────────────────────────────────────
+
+# PyPI 패키지명(소문자·언더스코어 정규화) → 코드 내 import 시 사용하는 최상위 모듈명
+_PYPI_TO_IMPORT: dict = {
+    "fastapi":                   "fastapi",
+    "uvicorn":                   "uvicorn",
+    "starlette":                 "starlette",
+    "pydantic":                  "pydantic",
+    "sqlalchemy":                "sqlalchemy",
+    "alembic":                   "alembic",
+    "websockets":                "websockets",
+    "python_multipart":          "multipart",
+    "aiofiles":                  "aiofiles",
+    "httpx":                     "httpx",
+    "requests":                  "requests",
+    "python_dotenv":             "dotenv",
+    "python_jose":               "jose",
+    "passlib":                   "passlib",
+    "pillow":                    "PIL",
+    "bcrypt":                    "bcrypt",
+    "cryptography":              "cryptography",
+    "itsdangerous":              "itsdangerous",
+    "jinja2":                    "jinja2",
+    "aiosqlite":                 "aiosqlite",
+    "asyncpg":                   "asyncpg",
+    "psycopg2":                  "psycopg2",
+    "psycopg2_binary":           "psycopg2",
+    "pymysql":                   "pymysql",
+    "motor":                     "motor",
+    "pymongo":                   "pymongo",
+    "redis":                     "redis",
+    "celery":                    "celery",
+    "boto3":                     "boto3",
+    "openai":                    "openai",
+    "anthropic":                 "anthropic",
+    "google_genai":              "google",
+    "google_generativeai":       "google",
+    "numpy":                     "numpy",
+    "pandas":                    "pandas",
+    "scipy":                     "scipy",
+    "matplotlib":                "matplotlib",
+    "scikit_learn":              "sklearn",
+    "torch":                     "torch",
+    "tensorflow":                "tensorflow",
+    "pytest":                    "pytest",
+    "pytest_asyncio":            "pytest_asyncio",
+    "httpx":                     "httpx",
+    "anyio":                     "anyio",
+    "email_validator":           "email_validator",
+    "python_slugify":            "slugify",
+    "pyyaml":                    "yaml",
+    "toml":                      "toml",
+    "click":                     "click",
+    "rich":                      "rich",
+    "loguru":                    "loguru",
+}
+
+
+def _normalize_pkg_name(raw: str) -> str:
+    """PyPI 패키지명을 소문자 언더스코어 형식으로 정규화."""
+    # extras 제거: uvicorn[standard] → uvicorn
+    name = re.split(r'[\[>=<!;\s]', raw.strip())[0]
+    return name.lower().replace("-", "_")
+
+
+def _collect_imported_top_modules(codes: dict) -> set:
+    """생성된 Python 파일에서 실제로 import된 최상위 모듈명 수집."""
+    top_modules: set = set()
+    for file_path, code in codes.items():
+        if not file_path.endswith(".py"):
+            continue
+        for line in code.splitlines():
+            line = line.strip()
+            # `import X` / `import X.Y`
+            m = re.match(r'^import\s+([\w.]+)', line)
+            if m:
+                top_modules.add(m.group(1).split(".")[0])
+            # `from X import Y` / `from X.Y import Z`
+            m2 = re.match(r'^from\s+([\w.]+)\s+import', line)
+            if m2:
+                top_modules.add(m2.group(1).split(".")[0])
+    return top_modules
+
+
+# import 없이도 실행에 필수인 인프라 패키지 (항상 유지)
+_ALWAYS_KEEP_NORMALIZED: set = {
+    "uvicorn",      # ASGI 서버 (CLI로 실행, 코드에 import 안 함)
+    "gunicorn",     # WSGI/ASGI 서버 (CLI)
+    "hypercorn",    # ASGI 서버 (CLI)
+    "daphne",       # ASGI 서버 (CLI)
+}
+
+# 명시적 import 대신 코드 내 특정 식별자 출현으로 필요 여부를 판단하는 패키지
+# key: 정규화된 PyPI명, value: 코드 전체에서 검색할 정규식 패턴
+_PYPI_TO_CODE_PATTERN: dict = {
+    "websockets":       r'\bWebSocket\b',            # FastAPI WebSocket 기능이 내부적으로 사용
+    "python_multipart": r'\b(Form|File|UploadFile)\b',  # FastAPI 파일·폼 업로드
+}
+
+
+def _fix_requirements_txt(output_dir: str, codes: dict) -> list:
+    """requirements.txt에서 실제로 사용되지 않거나 존재하지 않는 패키지를 제거.
+
+    전략:
+      1. 생성된 Python 파일의 import 문에서 실제 사용 모듈명 수집
+      2. _ALWAYS_KEEP_NORMALIZED 에 속하면 무조건 유지 (uvicorn 등 CLI 서버)
+      3. _PYPI_TO_IMPORT 매핑표에 있으면 → 해당 import명이 코드에 있을 때만 유지
+      4. 매핑표에 없으면 → pkg 이름 자체가 import에 보이면 유지, 그 외 제거
+    """
+    req_key = "requirements.txt"
+    if req_key not in codes:
+        return []
+
+    imported = _collect_imported_top_modules(codes)
+
+    # 코드 패턴 검색용: 모든 Python 파일 내용을 하나로 합침
+    all_py_code = "\n".join(v for k, v in codes.items() if k.endswith(".py"))
+
+    req_lines = codes[req_key].splitlines()
+    new_lines: list = []
+    removed: list = []
+
+    for line in req_lines:
+        stripped = line.strip()
+        # 빈 줄·주석은 그대로 유지
+        if not stripped or stripped.startswith("#"):
+            new_lines.append(line)
+            continue
+
+        pkg_norm = _normalize_pkg_name(stripped)
+
+        # ① 항상 유지 목록 (서버 CLI 패키지)
+        if pkg_norm in _ALWAYS_KEEP_NORMALIZED:
+            new_lines.append(line)
+            continue
+
+        # ② 코드 패턴으로 필요 여부를 판단하는 패키지 (e.g. websockets, python-multipart)
+        code_pattern = _PYPI_TO_CODE_PATTERN.get(pkg_norm)
+        if code_pattern is not None:
+            if re.search(code_pattern, all_py_code):
+                new_lines.append(line)    # 패턴 발견 → 유지
+            else:
+                removed.append(stripped)  # 패턴 없음 → 제거
+            continue
+
+        # ③ 알려진 매핑표에서 import명 조회
+        import_name = _PYPI_TO_IMPORT.get(pkg_norm)
+
+        if import_name is not None:
+            # 매핑표에 있는 패키지 → import 문에서 실제 사용 여부 확인
+            if import_name in imported:
+                new_lines.append(line)    # 사용됨 → 유지
+            else:
+                removed.append(stripped)  # 미사용 → 제거
+        else:
+            # ④ 매핑표 미등록 패키지 → pkg 이름 자체가 import에 보이면 유지
+            pkg_base = pkg_norm.split("_")[0]  # e.g. psycopg2_binary → psycopg2
+            if pkg_norm in imported or pkg_base in imported:
+                new_lines.append(line)    # 유지
+            else:
+                removed.append(stripped)  # 알 수 없고 미사용 → 제거
+
+    if not removed:
+        return []
+
+    new_content = "\n".join(new_lines)
+    codes[req_key] = new_content
+    full_path = os.path.join(output_dir, req_key)
+    if os.path.exists(full_path):
+        with open(full_path, "w", encoding="utf-8") as f:
+            f.write(new_content)
+    return removed
+
+
 # ── Python import 경로 사전 보정 ──────────────────────────────────────────────
 
 def _fix_python_imports(output_dir: str, codes: dict) -> list:
@@ -354,7 +528,12 @@ def qc_agent(state: dict) -> dict:
         state.update({"feedback": "검증할 코드가 없습니다.", "current_step": "ERROR"})
         return state
 
-    # 0. Python import 경로 사전 보정 (상대/bare → 절대경로, 중간 __init__.py 생성)
+    # 0-a. requirements.txt 유효성 검증 (존재하지 않거나 미사용 패키지 제거)
+    req_removed = _fix_requirements_txt(output_dir, codes)
+    if req_removed:
+        print(f"  🗑️  requirements.txt 유령 패키지 제거 ({len(req_removed)}건): {', '.join(req_removed)}")
+
+    # 0-b. Python import 경로 사전 보정 (상대/bare → 절대경로, 중간 __init__.py 생성)
     import_fixes = _fix_python_imports(output_dir, codes)
     if import_fixes:
         print(f"  🔧 Import 경로 사전 보정 ({len(import_fixes)}건): {', '.join(import_fixes)}")

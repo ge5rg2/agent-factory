@@ -66,8 +66,28 @@ def dev_agent(state: dict):
    - 실행 컨텍스트: 프로젝트 루트에서 `uvicorn backend.main:app` 으로 실행하므로 최상위 패키지명(예: backend)부터 시작하는 절대경로 사용
 5. [중요] 모든 Python 패키지 디렉토리(하위 디렉토리 포함)에 빈 __init__.py 파일 생성
    - 예: backend/__init__.py, backend/api/__init__.py, backend/api/v1/__init__.py, backend/api/v1/endpoints/__init__.py
-6. [중요] requirements.txt 작성 시 실제 사용하는 패키지와 버전 범위 명시
-   - 예: `fastapi>=0.100.0`, `uvicorn>=0.20.0`, `sqlalchemy>=2.0.0`
+6. [매우 중요] requirements.txt는 반드시 코드에서 실제로 import하는 PyPI 패키지만 포함
+   규칙:
+   - Python 표준 라이브러리(os, sys, math, json, asyncio, typing 등)는 절대 포함하지 마세요
+   - 존재하지 않거나 확인되지 않은 패키지는 절대 포함하지 마세요
+   - 프로젝트 코드에 import 문이 없는 패키지는 절대 포함하지 마세요
+   FastAPI 프로젝트 용도별 표준 PyPI 패키지 참고표 (이 외 패키지는 포함 금지):
+   | 용도           | PyPI 패키지명                  | import 시 사용명       |
+   |----------------|-------------------------------|----------------------|
+   | 웹 프레임워크   | fastapi>=0.100.0              | fastapi              |
+   | ASGI 서버      | uvicorn[standard]>=0.20.0     | uvicorn              |
+   | 데이터 검증    | pydantic>=2.0.0               | pydantic             |
+   | ORM            | sqlalchemy>=2.0.0             | sqlalchemy           |
+   | DB 마이그레이션| alembic>=1.10.0               | alembic              |
+   | WebSocket      | websockets>=10.0              | websockets           |
+   | 파일 업로드    | python-multipart>=0.0.6       | multipart            |
+   | 비동기 파일 I/O| aiofiles>=22.0.0              | aiofiles             |
+   | HTTP 클라이언트| httpx>=0.23.0 또는 requests>=2.28.0 | httpx / requests |
+   | 환경변수       | python-dotenv>=1.0.0          | dotenv               |
+   | JWT 인증       | python-jose[cryptography]>=3.3.0 | jose              |
+   | 패스워드 해시  | passlib[bcrypt]>=1.7.0        | passlib              |
+   | 이미지 처리    | pillow>=9.0.0                 | PIL                  |
+   ❌ 절대 포함 금지 예시: salt, ansible, sorten, boto3(미사용 시), 존재 불명 패키지
 7. [중요] Pydantic v2 문법 사용 (v1 문법 사용 금지)
    - ✅ `model_config = ConfigDict(from_attributes=True)`
    - ❌ `class Config: orm_mode = True`
