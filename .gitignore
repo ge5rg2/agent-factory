@@ -44,6 +44,6 @@ Thumbs.db
 *.log
 
 # Generated code outputs
-outputs/
+output/
 generated/
 mvp_output/
