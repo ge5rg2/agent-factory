@@ -269,6 +269,16 @@ def _fix_python_imports(output_dir: str, codes: dict) -> list:
             for i in range(1, len(parts)):
                 all_dirs.add("/".join(parts[:i]))
 
+    # Python 파일이 실제로 존재하는 디렉토리만 수집
+    # → JS/HTML 전용 프로젝트(src/, public/ 등)에 __init__.py가 생기는 문제 방지
+    py_containing_dirs: set = set()
+    for file_path in codes:
+        if file_path.endswith(".py"):
+            normalized = file_path.replace("\\", "/")
+            parts = normalized.split("/")
+            for i in range(1, len(parts)):
+                py_containing_dirs.add("/".join(parts[:i]))
+
     # 패키지(디렉토리) 등록 — 먼저 추가해서 모듈이 같은 이름이면 모듈이 덮어씀
     for dir_path in sorted(all_dirs):
         pkg_name = dir_path.split("/")[-1]
@@ -286,8 +296,11 @@ def _fix_python_imports(output_dir: str, codes: dict) -> list:
         abs_dotted = file_path.replace("\\", "/").replace("/", ".")[:-3]
         name_to_abs[module_name] = abs_dotted
 
-    # 2. 모든 중간 디렉토리에 __init__.py 자동 생성
+    # 2. Python 파일이 있는 중간 디렉토리에만 __init__.py 자동 생성
+    #    JS/HTML 전용 디렉토리(src/, public/ 등)는 건너뜀
     for dir_path in sorted(all_dirs):
+        if dir_path not in py_containing_dirs:
+            continue  # Python 파일 없는 디렉토리는 제외
         init_path = f"{dir_path}/__init__.py"
         full_init = os.path.join(output_dir, init_path)
         if not os.path.exists(full_init):
@@ -407,6 +420,67 @@ def _fix_python_imports(output_dir: str, codes: dict) -> list:
     return fixed
 
 
+# ── JS 누락 모듈 탐지 ────────────────────────────────────────────────────────
+
+def _detect_missing_js_modules(codes: dict) -> list:
+    """JS/TS 파일에서 로컬 import/require하는 모듈 중 파일 목록에 없는 것을 탐지.
+
+    Returns:
+        ["[파일경로] JS import 누락: '경로' (해석: 절대경로)", ...] 형태의 경고 목록
+    """
+    missing: list = []
+    all_js_files = {p.replace("\\", "/") for p in codes if p.endswith((".js", ".ts", ".jsx", ".tsx"))}
+
+    for file_path, code in codes.items():
+        if not file_path.endswith((".js", ".ts", ".jsx", ".tsx")):
+            continue
+        base_dir = os.path.dirname(file_path.replace("\\", "/"))
+
+        patterns = [
+            r'import\s+[^"\']*\s+from\s+[\'"](\.[^\'"\s]+)[\'"]',
+            r'import\s*\([\'"](\.[^\'"\s]+)[\'"]\)',
+            r'require\s*\(\s*[\'"](\.[^\'"\s]+)[\'"]\s*\)',
+        ]
+        seen = set()
+        for pat in patterns:
+            for m in re.finditer(pat, code):
+                rel_path = m.group(1)
+                # 절대 경로로 변환
+                if base_dir:
+                    abs_path = base_dir + "/" + rel_path
+                else:
+                    abs_path = rel_path
+                abs_path = abs_path.replace("\\", "/")
+                # ../ 같은 상위 경로 정규화
+                parts = []
+                for p in abs_path.split("/"):
+                    if p == "..":
+                        if parts:
+                            parts.pop()
+                    elif p and p != ".":
+                        parts.append(p)
+                abs_path = "/".join(parts)
+
+                if abs_path in seen:
+                    continue
+                seen.add(abs_path)
+
+                # 확장자가 없으면 .js / .ts / index.js 등 후보 시도
+                candidates = [
+                    abs_path,
+                    abs_path + ".js",
+                    abs_path + ".ts",
+                    abs_path + "/index.js",
+                    abs_path + "/index.ts",
+                ]
+                found = any(c in all_js_files for c in candidates)
+                if not found:
+                    msg = f"[{file_path}] JS import 누락: '{rel_path}' (해석: {abs_path})"
+                    missing.append(msg)
+
+    return missing
+
+
 # ── Gemini 코드 리뷰 & 수정 ───────────────────────────────────────────────────
 
 def _gemini_review_and_fix(prd: str, current_codes: dict, syntax_errors: list) -> dict:
@@ -432,12 +506,16 @@ def _gemini_review_and_fix(prd: str, current_codes: dict, syntax_errors: list) -
 
 검토 항목:
 1. 문법 오류 및 런타임 에러 가능성
-2. import 누락 또는 잘못된 경로
+2. Python import 누락 또는 잘못된 경로
    - [중요] 반드시 절대경로 import 사용 (`from backend.models import X` 형식)
    - 상대경로 import (from .X, from ..X, from ...X) 는 절대 사용하지 마세요
    - bare import (from models import X) 도 사용하지 마세요
-3. 프론트엔드-백엔드 API 연동 불일치 (URL, 메서드, 필드명)
-4. 기획서 대비 핵심 기능 누락
+3. JS/TS import/require로 참조하지만 파일 목록에 없는 누락 파일
+   - 예: `import Vector2 from './utils/vector2'` 인데 src/utils/vector2.js가 없는 경우
+   - 이런 파일은 new_files에 완전한 코드를 생성해야 합니다
+4. 클래스/함수 인터페이스 불일치 (한 파일에서 호출하는 메서드가 다른 파일에 없는 경우)
+5. 프론트엔드-백엔드 API 연동 불일치 (URL, 메서드, 필드명)
+6. 기획서 대비 핵심 기능 누락
 
 반드시 아래 JSON 형식으로만 답변하세요 (다른 텍스트 없이 JSON만):
 {{
@@ -445,11 +523,15 @@ def _gemini_review_and_fix(prd: str, current_codes: dict, syntax_errors: list) -
     "fixed_files": {{
         "수정이_필요한_파일경로": "수정된_전체_코드"
     }},
+    "new_files": {{
+        "새로_생성할_파일경로": "파일_전체_코드"
+    }},
     "summary": "전체 QC 결과 한 줄 요약"
 }}
 
 수정이 필요 없는 파일은 fixed_files에 포함하지 마세요.
-수정할 문제가 전혀 없으면 issues를 빈 배열로, fixed_files를 빈 객체로 반환하세요.
+코드에서 import/require하지만 파일 목록에 없는 파일은 new_files에 생성해 주세요.
+수정할 문제가 전혀 없으면 issues를 빈 배열로, fixed_files와 new_files를 빈 객체로 반환하세요.
 """
 
     response = client.models.generate_content(
@@ -554,9 +636,18 @@ def qc_agent(state: dict) -> dict:
 
         # 2. 정적 문법 검사
         syntax_errors = _run_syntax_checks(output_dir, codes)
+
+        # 2-b. JS/TS 누락 모듈 탐지 (import하는데 파일이 없는 경우)
+        js_missing = _detect_missing_js_modules(codes)
+        if js_missing:
+            print(f"  ⚠️  누락 JS 모듈 {len(js_missing)}건 탐지")
+            for msg in js_missing:
+                print(f"      {msg}")
+            syntax_errors.extend(js_missing)
+
         if syntax_errors:
-            print(f"  ⚠️  문법 오류 {len(syntax_errors)}건 발견")
-            for err in syntax_errors:
+            print(f"  ⚠️  문법/구조 오류 {len(syntax_errors)}건 발견")
+            for err in [e for e in syntax_errors if not e.startswith("[") or "JS import 누락" not in e]:
                 print(f"      {err}")
         else:
             print(f"  ✅ 문법 검사 통과")
@@ -577,20 +668,38 @@ def qc_agent(state: dict) -> dict:
             print(f"  📋 이슈 {len(issues)}건: {', '.join(issues[:2])}{'...' if len(issues) > 2 else ''}")
 
         # 4. 수정 파일 적용
-        if fixed_files:
-            print(f"  🔧 {len(fixed_files)}개 파일 수정 적용 중...")
-            for file_path, fixed_code in fixed_files.items():
-                full_path = os.path.join(output_dir, file_path)
-                if os.path.exists(full_path):
+        new_files = result.get("new_files", {})
+        if fixed_files or new_files:
+            if fixed_files:
+                print(f"  🔧 {len(fixed_files)}개 파일 수정 적용 중...")
+                for file_path, fixed_code in fixed_files.items():
+                    full_path = os.path.join(output_dir, file_path)
+                    parent = os.path.dirname(full_path)
+                    if parent:
+                        os.makedirs(parent, exist_ok=True)
                     with open(full_path, "w", encoding="utf-8") as f:
                         f.write(fixed_code)
                     codes[file_path] = fixed_code
                     total_fixed_files.add(file_path)
-            print(f"  ✅ 수정 완료")
+
+            if new_files:
+                print(f"  ✨ {len(new_files)}개 누락 파일 신규 생성 중...")
+                for file_path, new_code in new_files.items():
+                    full_path = os.path.join(output_dir, file_path)
+                    parent = os.path.dirname(full_path)
+                    if parent:
+                        os.makedirs(parent, exist_ok=True)
+                    with open(full_path, "w", encoding="utf-8") as f:
+                        f.write(new_code)
+                    codes[file_path] = new_code
+                    total_fixed_files.add(file_path)
+                    print(f"      ✅ {file_path}")
+
+            print(f"  ✅ 적용 완료")
         else:
             print(f"  ✅ 추가 수정 필요 없음")
-            # 이슈도 없고 수정도 없으면 조기 종료
-            if not issues and not syntax_errors:
+            # 이슈도 없고 수정/생성도 없으면 조기 종료
+            if not issues and not syntax_errors and not new_files:
                 print(f"\n  📝 README.md 생성 중...")
                 _generate_readme(state, output_dir, codes)
                 state.update({

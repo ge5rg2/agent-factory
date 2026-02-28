@@ -12,7 +12,6 @@ client = genai.Client(
 _FRONTEND_EXTENSIONS = {".html", ".css", ".js", ".ts", ".tsx", ".jsx", ".vue", ".svelte"}
 _FRONTEND_DIR_PREFIXES = ("frontend", "static", "public", "src", "client", "web", "templates")
 
-# 백엔드 에이전트가 처리하는 확장자
 _BACKEND_EXTENSIONS = {".py", ".txt", ".cfg", ".ini", ".toml", ".yaml", ".yml"}
 
 
@@ -21,21 +20,18 @@ def _is_backend_file(file_path: str) -> bool:
     normalized = file_path.replace("\\", "/").lower()
     ext = os.path.splitext(normalized)[1]
 
-    # 프론트엔드 파일 제외
     if ext in _FRONTEND_EXTENSIONS:
         return False
     for prefix in _FRONTEND_DIR_PREFIXES:
         if normalized.startswith(prefix + "/"):
             return False
 
-    # design_spec.json은 designer가 생성하므로 제외
     if normalized == "design_spec.json":
         return False
 
     if ext in _BACKEND_EXTENSIONS:
         return True
 
-    # 확장자 없는 파일(Dockerfile, Makefile 등)도 백엔드 담당
     if not ext:
         return True
 
@@ -45,14 +41,23 @@ def _is_backend_file(file_path: str) -> bool:
 def backend_agent(state: dict) -> dict:
     """백엔드 파일을 생성하는 전문 에이전트.
 
-    FastAPI 기반 비즈니스 로직과 API 엔드포인트를 구현합니다.
-    Pydantic v2, SQLAlchemy 2.0 문법을 사용하고
-    절대경로 import 및 올바른 requirements.txt를 생성합니다.
+    project_type이 frontend_only인 경우 즉시 반환합니다.
+    interface_contracts를 활용해 파일 간 API 일관성을 보장합니다.
     """
+    project_type = state.get("project_type", "fullstack")
     prd = state.get("prd", "")
     file_tree = state.get("file_tree", {})
+    interface_contracts = state.get("interface_contracts", {})
 
     be_files = {path: desc for path, desc in file_tree.items() if _is_backend_file(path)}
+
+    # 순수 프론트엔드 프로젝트는 백엔드 생성 불필요
+    if project_type == "frontend_only":
+        if be_files:
+            print(f"  ⏭️  frontend_only 프로젝트 — BE 파일 생성 건너뜀 ({', '.join(be_files.keys())})")
+        codes = state.get("codes", {})
+        state.update({"codes": codes, "current_step": "QC"})
+        return state
 
     if not be_files:
         state.update({"current_step": "QC"})
@@ -60,6 +65,11 @@ def backend_agent(state: dict) -> dict:
 
     codes = state.get("codes", {})
     all_files = "\n".join(f"- {path}: {desc}" for path, desc in file_tree.items())
+
+    # 전체 인터페이스 계약 요약
+    all_contracts_str = "\n".join(
+        f"- {path}: {contract}" for path, contract in interface_contracts.items()
+    ) if interface_contracts else "(인터페이스 계약 없음)"
 
     for file_path, file_description in be_files.items():
         print(f"  ⚙️  BE 생성 중: {file_path}")
@@ -70,6 +80,8 @@ def backend_agent(state: dict) -> dict:
             for existing_path, existing_code in codes.items():
                 if existing_path != "design_spec.json":
                     existing_codes_context += f"\n--- {existing_path} ---\n{existing_code}\n"
+
+        current_contract = interface_contracts.get(file_path, "")
 
         prompt = f"""
 당신은 시니어 백엔드 개발자입니다.
@@ -82,47 +94,37 @@ def backend_agent(state: dict) -> dict:
 {all_files}
 {existing_codes_context}
 
+=== 인터페이스 계약 (반드시 준수) ===
+이 파일이 반드시 구현해야 하는 API:
+{current_contract or '(이 파일에 대한 계약 없음)'}
+
+프로젝트 전체 인터페이스 계약:
+{all_contracts_str}
+
 === 현재 작성할 파일 ===
 파일 경로: {file_path}
 파일 역할: {file_description}
 
 요구사항:
 1. 실제로 실행 가능한 완전한 코드를 작성하세요
-2. 주석은 최소화하고 코드 자체가 명확하도록 작성하세요
-3. FastAPI 기반으로 구현하세요 (CORS 설정 포함)
-4. [중요] 프로젝트 내 모듈 import 시 반드시 절대경로 import 사용 (상대경로 import 절대 금지)
-   - ✅ 올바른 예: `from backend.models import Customer`
-   - ❌ 잘못된 예: `from models import Customer` (bare import)
-   - ❌ 잘못된 예: `from .models import Customer` (상대경로)
-   - 실행 컨텍스트: 프로젝트 루트에서 `uvicorn backend.main:app` 으로 실행
-5. [중요] 모든 Python 패키지 디렉토리(하위 포함)에 빈 __init__.py 파일 생성
-   - 예: backend/__init__.py, backend/api/__init__.py
-6. [매우 중요] requirements.txt는 반드시 코드에서 실제로 import하는 PyPI 패키지만 포함
-   표준 FastAPI 패키지 참고표:
+2. FastAPI 기반으로 구현하세요 (CORS 설정 포함)
+3. [중요] 프로젝트 내 모듈 import 시 반드시 절대경로 import 사용
+   - ✅ from backend.models import Customer
+   - ❌ from .models import Customer (상대경로 금지)
+4. [중요] 모든 Python 패키지 디렉토리에 빈 __init__.py 파일 생성
+5. [매우 중요] requirements.txt는 실제로 import하는 PyPI 패키지만 포함
+   표준 패키지 참고표:
    | PyPI 패키지명                    | import 사용명  |
    |----------------------------------|----------------|
    | fastapi>=0.100.0                 | fastapi        |
    | uvicorn[standard]>=0.20.0        | uvicorn        |
    | pydantic>=2.0.0                  | pydantic       |
    | sqlalchemy>=2.0.0                | sqlalchemy     |
-   | alembic>=1.10.0                  | alembic        |
-   | websockets>=10.0                 | websockets     |
-   | python-multipart>=0.0.6          | multipart      |
-   | aiofiles>=22.0.0                 | aiofiles       |
-   | httpx>=0.23.0                    | httpx          |
-   | requests>=2.28.0                 | requests       |
    | python-dotenv>=1.0.0             | dotenv         |
-   | python-jose[cryptography]>=3.3.0 | jose           |
-   | passlib[bcrypt]>=1.7.0           | passlib        |
-   | pillow>=9.0.0                    | PIL            |
-   ❌ 절대 포함 금지: salt, ansible, sorten, 존재 불명 패키지
-   ❌ Python 표준 라이브러리(os, sys, math, json, asyncio, typing 등) 포함 금지
-7. [중요] Pydantic v2 문법 사용
-   - ✅ `model_config = ConfigDict(from_attributes=True)`
-   - ❌ `class Config: orm_mode = True`
-8. [중요] SQLAlchemy 2.0 문법 사용
-   - ✅ `from sqlalchemy.orm import DeclarativeBase` + `class Base(DeclarativeBase): pass`
-   - ❌ `from sqlalchemy.ext.declarative import declarative_base`
+   ❌ Python 표준 라이브러리(os, sys, math 등) 포함 금지
+   ❌ 존재하지 않는 패키지(salt, ansible, sorten 등) 포함 금지
+6. Pydantic v2 문법: model_config = ConfigDict(from_attributes=True)
+7. SQLAlchemy 2.0 문법: from sqlalchemy.orm import DeclarativeBase
 
 반드시 아래 JSON 형식으로만 답변하세요 (다른 텍스트 없이 JSON만):
 {{
