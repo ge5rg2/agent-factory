@@ -152,8 +152,10 @@ def _run_phases_2_to_5(state: dict, log_path: str, from_phase: str = "PM_DONE") 
         _save_factory_meta(output_dir, {
             "idea": state.get("idea", ""),
             "project_name": state["project_name"],
+            "project_type": state.get("project_type", ""),
             "prd": state["prd"],
             "file_tree": state["file_tree"],
+            "interface_contracts": state.get("interface_contracts", {}),
         })
         log_path = save_checkpoint(state, "DISK_SAVED")
 
@@ -201,8 +203,10 @@ def run_new_build() -> None:
     state = {
         "idea": user_idea,
         "project_name": "",
+        "project_type": "",
         "prd": "",
         "file_tree": {},
+        "interface_contracts": {},
         "design_spec": {},
         "codes": {},
         "feedback": "",
@@ -340,8 +344,10 @@ def run_upgrade() -> None:
     state = {
         "idea": meta.get("idea", ""),
         "project_name": project_name,
+        "project_type": meta.get("project_type", ""),
         "prd": meta.get("prd", ""),
         "file_tree": meta.get("file_tree", {}),
+        "interface_contracts": meta.get("interface_contracts", {}),
         "design_spec": {},
         "codes": existing_codes,
         "feedback": "",
@@ -424,8 +430,10 @@ def run_upgrade() -> None:
     _save_factory_meta(project_dir, {
         "idea": meta.get("idea", ""),
         "project_name": project_name,
+        "project_type": state.get("project_type", meta.get("project_type", "")),
         "prd": state["prd"],
         "file_tree": merged_file_tree,
+        "interface_contracts": state.get("interface_contracts", meta.get("interface_contracts", {})),
     })
 
     state["file_tree"] = merged_file_tree

@@ -30,11 +30,12 @@ def frontend_agent(state: dict) -> dict:
 
     designer_agent가 생성한 design_spec을 참조하여
     Tailwind CSS 기반 UI와 HTML5 Canvas 컴포넌트를 구현합니다.
-    이미지 에셋 없이 CSS 도형과 유니코드 문자만으로 UI를 구성합니다.
+    interface_contracts를 활용해 파일 간 API 일관성을 보장합니다.
     """
     prd = state.get("prd", "")
     file_tree = state.get("file_tree", {})
     design_spec = state.get("design_spec", {})
+    interface_contracts = state.get("interface_contracts", {})
 
     fe_files = {path: desc for path, desc in file_tree.items() if _is_frontend_file(path)}
 
@@ -53,6 +54,11 @@ def frontend_agent(state: dict) -> dict:
     theme = design_spec.get("theme", {})
     components = design_spec.get("components", {})
 
+    # 전체 인터페이스 계약 요약 (모든 파일)
+    all_contracts_str = "\n".join(
+        f"- {path}: {contract}" for path, contract in interface_contracts.items()
+    ) if interface_contracts else "(인터페이스 계약 없음)"
+
     for file_path, file_description in fe_files.items():
         print(f"  🎨  FE 생성 중: {file_path}")
 
@@ -63,12 +69,12 @@ def frontend_agent(state: dict) -> dict:
                 if existing_path != "design_spec.json":
                     existing_codes_context += f"\n--- {existing_path} ---\n{existing_code}\n"
 
+        # 현재 파일의 인터페이스 계약
+        current_contract = interface_contracts.get(file_path, "")
+
         canvas_section = ""
         if use_canvas:
-            canvas_section = f"""
-Canvas 구현 가이드:
-{canvas_guide}
-"""
+            canvas_section = f"\nCanvas 구현 가이드:\n{canvas_guide}\n"
 
         prompt = f"""
 당신은 시니어 프론트엔드 개발자입니다.
@@ -84,13 +90,23 @@ Canvas 구현 가이드:
 {all_files}
 {existing_codes_context}
 
+=== 인터페이스 계약 (반드시 준수) ===
+이 파일이 반드시 구현해야 하는 API:
+{current_contract or '(이 파일에 대한 계약 없음 — 자유롭게 설계)'}
+
+프로젝트 전체 인터페이스 계약 (다른 파일에서 제공/기대하는 API):
+{all_contracts_str}
+
+[중요] 계약에 명시된 메서드/속성을 정확한 시그니처로 구현하세요.
+[중요] 다른 파일의 메서드를 호출할 때는 계약에 명시된 것만 호출하세요. 계약에 없는 메서드는 호출하지 마세요.
+
 === 현재 작성할 파일 ===
 파일 경로: {file_path}
 파일 역할: {file_description}
 
 요구사항:
-1. 실제로 실행 가능한 완전한 코드를 작성하세요
-2. Tailwind CSS는 CDN으로 로드 (`<script src="https://cdn.tailwindcss.com"></script>`)
+1. 실제로 실행 가능한 완전한 코드를 작성하세요 (절대 잘리거나 생략하지 마세요)
+2. Tailwind CSS는 CDN으로 로드 (<script src="https://cdn.tailwindcss.com"></script>)
 3. 디자인 스펙의 테마 색상과 컴포넌트 클래스를 그대로 적용하세요
    - primary 버튼: {components.get("button_primary", "")}
    - card: {components.get("card", "")}
@@ -99,10 +115,9 @@ Canvas 구현 가이드:
    No-Image 전략: {no_image_strategy}
    - 아이콘: 유니코드 문자 또는 CSS 도형으로 대체
    - 배경: gradient, solid color 사용
-   - 로고/이미지 영역: border-radius + background-color로 placeholder 구성
 5. HTML5 Canvas 사용: {'예 - ' + canvas_guide if use_canvas else '아니오 (CSS 레이아웃만 사용)'}
 {canvas_section}
-6. 백엔드 API 연동: fetch API 사용, baseURL = 'http://localhost:8000'
+6. 백엔드 API 연동 시: fetch API 사용, baseURL = 'http://localhost:8000'
 7. 반응형 레이아웃 (모바일 우선, Tailwind 반응형 프리픽스 사용)
 8. 주석 최소화, 코드 자체가 명확하도록 작성
 

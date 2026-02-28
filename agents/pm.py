@@ -9,6 +9,7 @@ client = genai.Client(
     api_key=os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 )
 
+
 def _flatten_file_tree(tree: dict, prefix: str = "") -> dict:
     """중첩된 dict 구조의 file_tree를 flat한 {파일경로: 설명} 형태로 변환."""
     result = {}
@@ -17,10 +18,10 @@ def _flatten_file_tree(tree: dict, prefix: str = "") -> dict:
         if isinstance(value, dict):
             result.update(_flatten_file_tree(value, path))
         elif isinstance(value, str):
-            # 경로가 /로 끝나면 디렉토리이므로 건너뜀
             if not path.endswith("/"):
                 result[path] = value
     return result
+
 
 def pm_agent(state: dict):
 
@@ -32,21 +33,34 @@ def pm_agent(state: dict):
 
 필수 요구사항:
 1. 기획서(PRD)는 한국어로 작성하되 문자열(string)로만 작성하세요
-2. file_tree의 키는 반드시 실제 파일 경로(예: backend/main.py)여야 합니다. 디렉토리(backend/)나 중첩 dict는 절대 사용하지 마세요
-3. 각 파일의 역할을 구체적으로 설명하세요
-4. project_name은 영어 snake_case로 작성하세요 (예: todo_list_app)
+2. file_tree의 키는 반드시 실제 파일 경로(예: src/utils/vector2.js)여야 합니다. 디렉토리나 중첩 dict 금지
+3. project_name은 영어 snake_case로 작성하세요 (예: doom_fps_game)
+4. [핵심] 파일 의존성 완전성: 파일 A가 파일 B를 import/require한다면, 파일 B도 file_tree에 반드시 포함
+   - 게임/그래픽 프로젝트: 수학/벡터 유틸리티 파일 필수 포함 (예: src/utils/vector2.js)
+   - 모든 공통 유틸리티는 utils/ 또는 helpers/ 디렉토리에 분리하여 file_tree에 포함
+   - 암묵적 의존성(파일 트리에 없는데 코드에서 import)은 절대 허용하지 않습니다
+5. project_type 판별 규칙 (반드시 정확히 판별):
+   - "frontend_only": 게임, SPA, 랜딩페이지 등 순수 프론트엔드 → Python 파일, requirements.txt 포함 금지
+   - "fullstack": REST API + UI → backend/ + frontend/ 구조, requirements.txt 포함
+   - "backend_only": CLI, 데이터 처리 등 순수 백엔드
+6. interface_contracts: 여러 파일에서 참조되는 클래스/함수의 공개 API 계약
+   - 형식: {{ "파일경로": "class ClassName {{ method1(param: type): returnType; method2(): void; }}" }}
+   - 파일 간 인터페이스 불일치가 런타임 에러의 주요 원인입니다. 모든 주요 클래스에 계약 작성 필수
+   - 예시: {{ "src/map.js": "class Map {{ loadData(data): void; isWalkable(x,y,size): bool; getGrid(): number[][]; }}" }}
 
 반드시 아래 JSON 형식으로만 답변하세요 (다른 텍스트 없이 JSON만):
 {{
-    "project_name": "todo_list_app",
-    "prd": "기획 상세 내용 (핵심 기능, 기술 스택, 주요 컴포넌트 포함) - 반드시 문자열로",
+    "project_name": "doom_fps_game",
+    "project_type": "frontend_only",
+    "prd": "기획 상세 내용 - 반드시 문자열로",
     "file_tree": {{
-        "requirements.txt": "백엔드 Python 패키지 의존성 목록",
-        "backend/__init__.py": "Python 패키지 초기화 파일 (빈 파일)",
-        "backend/main.py": "FastAPI 메인 서버 - 라우팅 및 CORS 설정",
-        "backend/models.py": "데이터 모델 정의",
-        "frontend/index.html": "메인 페이지 UI",
-        "frontend/app.js": "프론트엔드 로직"
+        "index.html": "메인 HTML 진입점",
+        "src/game.js": "게임 루프 및 상태 관리",
+        "src/utils/vector2.js": "2D 벡터 수학 유틸리티 클래스"
+    }},
+    "interface_contracts": {{
+        "src/map.js": "class Map {{ loadData(data): void; isWalkable(x,y,size): bool; getGrid(): number[][]; getWidth(): int; getHeight(): int; }}",
+        "src/player.js": "class Player {{ constructor(x,y,angle): void; update(deltaTime,map): void; takeDamage(amount): void; isAlive(): bool; getPosition(): {{x,y}}; }}"
     }}
 }}
 """
@@ -59,7 +73,6 @@ def pm_agent(state: dict):
         )
         raw = response.text.strip()
 
-        # ```json ... ``` 마크다운 블록 제거
         if raw.startswith("```"):
             raw = re.sub(r'^```(?:json)?\n?', '', raw)
             raw = re.sub(r'\n?```$', '', raw.strip())
@@ -67,20 +80,26 @@ def pm_agent(state: dict):
         result = json.loads(raw)
 
         file_tree = result.get("file_tree", {})
-        # 중첩 dict가 올 경우 flat하게 변환
         if any(isinstance(v, dict) for v in file_tree.values()):
             file_tree = _flatten_file_tree(file_tree)
-        # 디렉토리 경로(끝에 /) 제거
         file_tree = {k: v for k, v in file_tree.items() if not k.endswith("/")}
 
         prd = result.get("prd", "")
         if isinstance(prd, dict):
             prd = json.dumps(prd, ensure_ascii=False, indent=2)
 
+        interface_contracts = result.get("interface_contracts", {})
+        if not isinstance(interface_contracts, dict):
+            interface_contracts = {}
+
+        project_type = result.get("project_type", "fullstack")
+
         state.update({
             "project_name": result.get("project_name", "mvp_project"),
+            "project_type": project_type,
             "prd": prd,
             "file_tree": file_tree,
+            "interface_contracts": interface_contracts,
             "codes": {},
             "feedback": "",
             "current_step": "FE_DEVELOP"
@@ -105,8 +124,10 @@ def pm_agent(state: dict):
 
                     state.update({
                         "project_name": result.get("project_name", "mvp_project"),
+                        "project_type": result.get("project_type", "fullstack"),
                         "prd": prd,
                         "file_tree": file_tree,
+                        "interface_contracts": result.get("interface_contracts", {}),
                         "codes": {},
                         "feedback": "",
                         "current_step": "FE_DEVELOP"
@@ -117,8 +138,10 @@ def pm_agent(state: dict):
 
         state.update({
             "project_name": "mvp_project",
+            "project_type": "fullstack",
             "prd": response.text if response else "",
             "file_tree": {},
+            "interface_contracts": {},
             "codes": {},
             "feedback": "JSON 파싱 실패",
             "current_step": "ERROR"
@@ -129,8 +152,10 @@ def pm_agent(state: dict):
         print(f"⚠️  에러 발생: {e}")
         state.update({
             "project_name": "mvp_project",
+            "project_type": "fullstack",
             "prd": "",
             "file_tree": {},
+            "interface_contracts": {},
             "codes": {},
             "feedback": f"에러: {str(e)}",
             "current_step": "ERROR"
@@ -139,18 +164,13 @@ def pm_agent(state: dict):
 
 
 def pm_upgrade_agent(state: dict, upgrade_request: str) -> dict:
-    """기존 프로젝트를 분석하여 고도화 델타 계획을 수립하는 에이전트.
-
-    기존 PRD와 코드를 참조하여 변경이 필요한 파일만 담은
-    delta_file_tree를 생성합니다.
-    """
+    """기존 프로젝트를 분석하여 고도화 델타 계획을 수립하는 에이전트."""
     existing_prd = state.get("prd", "")
     existing_file_tree = state.get("file_tree", {})
     existing_codes = state.get("codes", {})
 
     file_list = "\n".join(f"- {path}: {desc}" for path, desc in existing_file_tree.items())
 
-    # 코드 미리보기: 각 파일 첫 25줄, 최대 8개 파일
     preview_files = [
         p for p in existing_codes
         if p.endswith((".py", ".js", ".html", ".ts")) and not p.startswith(".")
