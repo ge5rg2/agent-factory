@@ -136,3 +136,125 @@ def pm_agent(state: dict):
             "current_step": "ERROR"
         })
         return state
+
+
+def pm_upgrade_agent(state: dict, upgrade_request: str) -> dict:
+    """기존 프로젝트를 분석하여 고도화 델타 계획을 수립하는 에이전트.
+
+    기존 PRD와 코드를 참조하여 변경이 필요한 파일만 담은
+    delta_file_tree를 생성합니다.
+    """
+    existing_prd = state.get("prd", "")
+    existing_file_tree = state.get("file_tree", {})
+    existing_codes = state.get("codes", {})
+
+    file_list = "\n".join(f"- {path}: {desc}" for path, desc in existing_file_tree.items())
+
+    # 코드 미리보기: 각 파일 첫 25줄, 최대 8개 파일
+    preview_files = [
+        p for p in existing_codes
+        if p.endswith((".py", ".js", ".html", ".ts")) and not p.startswith(".")
+    ][:8]
+    code_preview = ""
+    for path in preview_files:
+        lines = existing_codes[path].splitlines()[:25]
+        code_preview += f"\n--- {path} (첫 {len(lines)}줄) ---\n" + "\n".join(lines) + "\n"
+
+    prompt = f"""
+당신은 MVP 전문 기획자(PM)입니다.
+기존 프로젝트에 새 기능을 추가하거나 수정하는 고도화 계획을 수립해주세요.
+
+=== 기존 기획서 (PRD) ===
+{existing_prd}
+
+=== 기존 파일 구조 ===
+{file_list or '(파일 없음)'}
+
+=== 코드 미리보기 ===
+{code_preview or '(없음)'}
+
+=== 고도화 요청사항 ===
+{upgrade_request}
+
+분석 요령:
+- 요청사항을 구현하기 위해 반드시 변경/추가해야 하는 파일만 delta_file_tree에 포함하세요
+- 변경 없는 파일은 절대 포함하지 마세요
+- 새 파일 추가 시에는 기존 구조와 일관성을 유지하세요
+
+반드시 아래 JSON 형식으로만 답변하세요 (다른 텍스트 없이 JSON만):
+{{
+    "updated_prd": "업데이트된 기획서 전체 (기존 내용 + 새 기능 반영)",
+    "delta_file_tree": {{
+        "수정이_필요한_파일_경로": "이 파일에서 무엇을 변경할지 설명",
+        "새로_추가할_파일_경로": "이 새 파일의 역할 설명"
+    }},
+    "change_summary": "고도화 변경사항 한 줄 요약 (한국어)"
+}}
+"""
+
+    response = None
+    try:
+        response = client.models.generate_content(
+            model='gemini-2.5-flash-lite',
+            contents=prompt
+        )
+        raw = response.text.strip()
+        if raw.startswith("```"):
+            raw = re.sub(r'^```(?:json)?\n?', '', raw)
+            raw = re.sub(r'\n?```$', '', raw.strip())
+
+        result = json.loads(raw)
+
+        delta_file_tree = result.get("delta_file_tree", {})
+        if any(isinstance(v, dict) for v in delta_file_tree.values()):
+            delta_file_tree = _flatten_file_tree(delta_file_tree)
+        delta_file_tree = {k: v for k, v in delta_file_tree.items() if not k.endswith("/")}
+
+        updated_prd = result.get("updated_prd", existing_prd)
+        if isinstance(updated_prd, dict):
+            updated_prd = json.dumps(updated_prd, ensure_ascii=False, indent=2)
+
+        state.update({
+            "prd": updated_prd,
+            "file_tree": delta_file_tree,
+            "feedback": result.get("change_summary", ""),
+            "current_step": "DESIGNER",
+        })
+        return state
+
+    except json.JSONDecodeError as e:
+        print(f"⚠️  PM Upgrade JSON 파싱 오류: {e}")
+        if response:
+            try:
+                json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
+                if json_match:
+                    result = json.loads(json_match.group())
+                    delta_file_tree = result.get("delta_file_tree", {})
+                    if any(isinstance(v, dict) for v in delta_file_tree.values()):
+                        delta_file_tree = _flatten_file_tree(delta_file_tree)
+                    delta_file_tree = {k: v for k, v in delta_file_tree.items() if not k.endswith("/")}
+                    state.update({
+                        "prd": result.get("updated_prd", existing_prd),
+                        "file_tree": delta_file_tree,
+                        "feedback": result.get("change_summary", ""),
+                        "current_step": "DESIGNER",
+                    })
+                    return state
+            except (json.JSONDecodeError, AttributeError):
+                pass
+
+        state.update({
+            "file_tree": {},
+            "feedback": "업그레이드 계획 파싱 실패",
+            "current_step": "ERROR",
+        })
+        return state
+
+    except Exception as e:
+        print(f"⚠️  PM Upgrade 에러: {e}")
+        state.update({
+            "file_tree": {},
+            "feedback": f"에러: {str(e)}",
+            "current_step": "ERROR",
+        })
+        return state
