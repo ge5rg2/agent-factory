@@ -3,6 +3,13 @@ from agents.designer import designer_agent
 from agents.frontend import frontend_agent
 from agents.backend import backend_agent
 from agents.qc import qc_agent
+from checkpoint import (
+    save_checkpoint,
+    list_active_checkpoints,
+    archive_checkpoint,
+    delete_checkpoint,
+    PHASE_LABELS,
+)
 import json
 import os
 
@@ -65,8 +72,124 @@ def _read_project_codes(project_dir: str) -> dict:
                 with open(full_path, encoding="utf-8") as f:
                     codes[rel_path] = f.read()
             except UnicodeDecodeError:
-                pass  # 바이너리 파일 건너뜀
+                pass
     return codes
+
+
+# ── 신규 빌드 공통 후반부 (Phase 2~5) ─────────────────────────────────────────
+
+def _run_phases_2_to_5(state: dict, log_path: str, from_phase: str = "PM_DONE") -> None:
+    """Designer → Frontend → Backend → (저장) → QC 단계 실행.
+
+    from_phase 인자로 중간 단계부터 재개할 수 있습니다.
+    """
+    output_dir = os.path.join("output", state["project_name"])
+    skip_designer = from_phase not in ("PM_DONE",)
+    skip_frontend = from_phase not in ("PM_DONE", "DESIGNER_DONE")
+    skip_backend = from_phase not in ("PM_DONE", "DESIGNER_DONE", "FRONTEND_DONE")
+    skip_save = from_phase in ("DISK_SAVED",)
+
+    # ── Phase 2: Designer Agent ───────────────────────────────────────────────
+    if not skip_designer:
+        print("\n" + "-" * 60)
+        print("🎨 [Phase 2/5] Designer Agent - UI/UX 디자인 스펙 설계 중...")
+        print("-" * 60)
+
+        state = designer_agent(state)
+
+        design_spec = state.get("design_spec", {})
+        theme = design_spec.get("theme", {})
+        canvas_on = design_spec.get("canvas", {}).get("use_canvas", False)
+        print(f"\n✅ 디자인 스펙 완료!")
+        print(f"  🎨 Primary: {theme.get('primary', '-')} / BG: {theme.get('background', '-')}")
+        print(f"  🖼️  Canvas: {'사용' if canvas_on else '미사용'}")
+
+        log_path = save_checkpoint(state, "DESIGNER_DONE")
+    else:
+        print("\n  ⏭️  [Phase 2] Designer 체크포인트 재사용 (건너뜀)")
+
+    # ── Phase 3: Frontend Agent ───────────────────────────────────────────────
+    if not skip_frontend:
+        print("\n" + "-" * 60)
+        print("💻 [Phase 3/5] Frontend Agent - 프론트엔드 코드 생성 중...")
+        print("-" * 60)
+
+        state = frontend_agent(state)
+
+        if state["current_step"] == "ERROR":
+            print(f"\n❌ 오류 발생: {state['feedback']}")
+            return
+
+        fe_files = [p for p in state["codes"] if _is_frontend(p)]
+        print(f"\n✅ FE 코드 생성 완료! ({len(fe_files)}개 파일)")
+
+        log_path = save_checkpoint(state, "FRONTEND_DONE")
+    else:
+        print("\n  ⏭️  [Phase 3] Frontend 체크포인트 재사용 (건너뜀)")
+
+    # ── Phase 4: Backend Agent ────────────────────────────────────────────────
+    if not skip_backend:
+        print("\n" + "-" * 60)
+        print("⚙️  [Phase 4/5] Backend Agent - 백엔드 코드 생성 중...")
+        print("-" * 60)
+
+        state = backend_agent(state)
+
+        if state["current_step"] == "ERROR":
+            print(f"\n❌ 오류 발생: {state['feedback']}")
+            return
+
+        be_files = [p for p in state["codes"] if not _is_frontend(p)]
+        print(f"\n✅ BE 코드 생성 완료! ({len(be_files)}개 파일)")
+
+        log_path = save_checkpoint(state, "BACKEND_DONE")
+    else:
+        print("\n  ⏭️  [Phase 4] Backend 체크포인트 재사용 (건너뜀)")
+
+    # ── 전체 코드를 disk에 저장 ────────────────────────────────────────────────
+    if not skip_save:
+        _save_codes_to_disk(output_dir, state["codes"])
+        _save_factory_meta(output_dir, {
+            "idea": state.get("idea", ""),
+            "project_name": state["project_name"],
+            "prd": state["prd"],
+            "file_tree": state["file_tree"],
+        })
+        log_path = save_checkpoint(state, "DISK_SAVED")
+
+        print(f"\n📁 코드가 '{output_dir}/' 디렉토리에 저장되었습니다.")
+        print("\n📂 생성된 파일 목록:")
+        print("-" * 60)
+        for file_path, code in state["codes"].items():
+            lines = len(code.splitlines())
+            role = "🎨 FE" if _is_frontend(file_path) else "⚙️  BE"
+            print(f"  {role}  {file_path} ({lines} lines)")
+    else:
+        # disk에서 codes 재로드 (QC 용)
+        if not state.get("codes"):
+            state["codes"] = _read_project_codes(output_dir)
+        print(f"\n  ⏭️  코드 저장 체크포인트 재사용 ('{output_dir}/' 디렉토리)")
+
+    # ── Phase 5: QC Agent ─────────────────────────────────────────────────────
+    print("\n" + "-" * 60)
+    print("🔍 [Phase 5/5] QC Agent - 코드 검증 및 자동 수정 중...")
+    print("-" * 60)
+
+    state = qc_agent(state)
+
+    if state["current_step"] == "ERROR":
+        print(f"\n❌ 오류 발생: {state['feedback']}")
+        return
+
+    print("\n" + state["feedback"])
+
+    # ── 정상 완료: 체크포인트 아카이브 ────────────────────────────────────────
+    archive_checkpoint(log_path)
+
+    print("\n" + "=" * 60)
+    print("🎉 MVP 생성 완료!")
+    print(f"📂 결과물 위치: {output_dir}/")
+    print("=" * 60)
 
 
 # ── 신규 빌드 ─────────────────────────────────────────────────────────────────
@@ -110,87 +233,60 @@ def run_new_build() -> None:
         print(f"  📄 {file_path}")
         print(f"      └─ {description}")
 
-    # ── Phase 2: Designer Agent ───────────────────────────────────────────────
-    print("\n" + "-" * 60)
-    print("🎨 [Phase 2/5] Designer Agent - UI/UX 디자인 스펙 설계 중...")
-    print("-" * 60)
+    # ── 체크포인트: PM 완료 ───────────────────────────────────────────────────
+    log_path = save_checkpoint(state, "PM_DONE")
+    print(f"\n  💾 체크포인트 저장: {log_path}")
 
-    state = designer_agent(state)
+    _run_phases_2_to_5(state, log_path, from_phase="PM_DONE")
 
-    design_spec = state.get("design_spec", {})
-    theme = design_spec.get("theme", {})
-    canvas_on = design_spec.get("canvas", {}).get("use_canvas", False)
-    print(f"\n✅ 디자인 스펙 완료!")
-    print(f"  🎨 Primary: {theme.get('primary', '-')} / BG: {theme.get('background', '-')}")
-    print(f"  🖼️  Canvas: {'사용' if canvas_on else '미사용'}")
-    strategy = design_spec.get("no_image_strategy", "")
-    print(f"  🗺️  전략: {strategy[:60]}{'...' if len(strategy) > 60 else ''}")
 
-    # ── Phase 3: Frontend Agent ───────────────────────────────────────────────
-    print("\n" + "-" * 60)
-    print("💻 [Phase 3/5] Frontend Agent - 프론트엔드 코드 생성 중...")
-    print("-" * 60)
+# ── 체크포인트 복구 ───────────────────────────────────────────────────────────
 
-    state = frontend_agent(state)
+def run_resume(checkpoint: dict) -> None:
+    """중단된 파이프라인을 체크포인트에서 재가동."""
+    state = checkpoint["state"]
+    phase = checkpoint["phase_completed"]
+    log_path = checkpoint["file_path"]
 
-    if state["current_step"] == "ERROR":
-        print(f"\n❌ 오류 발생: {state['feedback']}")
-        return
+    project_name = state.get("project_name", "unknown")
+    output_dir = os.path.join("output", project_name)
 
-    fe_files = [p for p in state["codes"] if _is_frontend(p)]
-    print(f"\n✅ FE 코드 생성 완료! ({len(fe_files)}개 파일)")
+    print(f"\n  🔄 '{project_name}' 프로젝트 복구 시작")
+    print(f"  📍 재개 지점: {PHASE_LABELS.get(phase, phase)}")
 
-    # ── Phase 4: Backend Agent ────────────────────────────────────────────────
-    print("\n" + "-" * 60)
-    print("⚙️  [Phase 4/5] Backend Agent - 백엔드 코드 생성 중...")
-    print("-" * 60)
+    if phase == "PM_DONE":
+        _run_phases_2_to_5(state, log_path, from_phase="PM_DONE")
 
-    state = backend_agent(state)
+    elif phase == "DESIGNER_DONE":
+        _run_phases_2_to_5(state, log_path, from_phase="DESIGNER_DONE")
 
-    if state["current_step"] == "ERROR":
-        print(f"\n❌ 오류 발생: {state['feedback']}")
-        return
+    elif phase == "FRONTEND_DONE":
+        _run_phases_2_to_5(state, log_path, from_phase="FRONTEND_DONE")
 
-    be_files = [p for p in state["codes"] if not _is_frontend(p)]
-    print(f"\n✅ BE 코드 생성 완료! ({len(be_files)}개 파일)")
+    elif phase in ("BACKEND_DONE",):
+        _run_phases_2_to_5(state, log_path, from_phase="BACKEND_DONE")
 
-    # ── 전체 코드를 disk에 저장 ────────────────────────────────────────────────
-    output_dir = os.path.join("output", state["project_name"])
-    _save_codes_to_disk(output_dir, state["codes"])
+    elif phase == "DISK_SAVED":
+        # codes가 이미 disk에 있으므로 QC만 재실행
+        if not state.get("codes"):
+            state["codes"] = _read_project_codes(output_dir)
 
-    # 메타데이터 저장 (고도화 모드를 위해)
-    _save_factory_meta(output_dir, {
-        "idea": user_idea,
-        "project_name": state["project_name"],
-        "prd": state["prd"],
-        "file_tree": state["file_tree"],
-    })
+        print("\n" + "-" * 60)
+        print("🔍 [Phase 5/5] QC Agent - 코드 검증 및 자동 수정 중...")
+        print("-" * 60)
 
-    print(f"\n📁 코드가 '{output_dir}/' 디렉토리에 저장되었습니다.")
-    print("\n📂 생성된 파일 목록:")
-    print("-" * 60)
-    for file_path, code in state["codes"].items():
-        lines = len(code.splitlines())
-        role = "🎨 FE" if _is_frontend(file_path) else "⚙️  BE"
-        print(f"  {role}  {file_path} ({lines} lines)")
+        state = qc_agent(state)
+        print("\n" + state["feedback"])
+        archive_checkpoint(log_path)
 
-    # ── Phase 5: QC Agent ─────────────────────────────────────────────────────
-    print("\n" + "-" * 60)
-    print("🔍 [Phase 5/5] QC Agent - 코드 검증 및 자동 수정 중...")
-    print("-" * 60)
+        print("\n" + "=" * 60)
+        print("🎉 복구 완료!")
+        print(f"📂 결과물 위치: {output_dir}/")
+        print("=" * 60)
 
-    state = qc_agent(state)
-
-    if state["current_step"] == "ERROR":
-        print(f"\n❌ 오류 발생: {state['feedback']}")
-        return
-
-    print("\n" + state["feedback"])
-
-    print("\n" + "=" * 60)
-    print("🎉 MVP 생성 완료!")
-    print(f"📂 결과물 위치: {output_dir}/")
-    print("=" * 60)
+    else:
+        print(f"\n⚠️  알 수 없는 체크포인트 단계: {phase}. 처음부터 다시 시작하세요.")
+        delete_checkpoint(log_path)
 
 
 # ── 기존 프로젝트 고도화 ──────────────────────────────────────────────────────
@@ -300,7 +396,6 @@ def run_upgrade() -> None:
         print("\n  🎨 디자인 스펙 새로 생성")
 
     # ── Phase 3 & 4: 델타 파일 FE/BE 생성 ────────────────────────────────────
-    # file_tree를 delta_file_tree로 교체하여 에이전트가 델타 파일만 생성하도록 설정
     fe_delta = {p: d for p, d in delta_file_tree.items() if _is_frontend(p)}
     be_delta = {p: d for p, d in delta_file_tree.items() if not _is_frontend(p)}
 
@@ -323,10 +418,8 @@ def run_upgrade() -> None:
         print("\n  ⏭️  BE 변경 없음 (Phase 4 건너뜀)")
 
     # ── 기존 코드 + 델타 코드 병합 & 저장 ────────────────────────────────────
-    # state["codes"]에는 기존 코드 + 새로 생성된 델타 코드가 함께 있음
     _save_codes_to_disk(project_dir, state["codes"])
 
-    # 메타데이터 업데이트 (file_tree에 델타 파일 병합)
     merged_file_tree = {**meta.get("file_tree", {}), **delta_file_tree}
     _save_factory_meta(project_dir, {
         "idea": meta.get("idea", ""),
@@ -335,7 +428,6 @@ def run_upgrade() -> None:
         "file_tree": merged_file_tree,
     })
 
-    # QC용으로 전체 file_tree 복원
     state["file_tree"] = merged_file_tree
 
     print(f"\n📁 '{project_dir}/' 디렉토리 업데이트 완료.")
@@ -361,10 +453,64 @@ def run_upgrade() -> None:
 
 # ── 메인 엔트리포인트 ─────────────────────────────────────────────────────────
 
+def _check_and_offer_resume() -> bool:
+    """active 체크포인트가 있으면 사용자에게 복구 여부를 묻고 처리.
+
+    Returns:
+        True이면 복구를 진행했으므로 호출측에서 일반 메뉴를 건너뜁니다.
+    """
+    checkpoints = list_active_checkpoints()
+    if not checkpoints:
+        return False
+
+    print("\n⚠️  이전에 중단된 작업이 감지되었습니다:")
+    for i, cp in enumerate(checkpoints, 1):
+        ts = cp["timestamp"][:19].replace("T", " ")
+        label = PHASE_LABELS.get(cp["phase_completed"], cp["phase_completed"])
+        print(f"  {i}. [{ts}] {cp['project_name']} — {label}")
+
+    print()
+    print("r. 중단된 작업 재개")
+    print("d. 로그 삭제 후 새로 시작")
+    print("s. 무시하고 계속 (새 메뉴로)")
+    print()
+
+    choice = input("선택 (r/d/s): ").strip().lower()
+
+    if choice == "r":
+        # 여러 개면 선택
+        if len(checkpoints) == 1:
+            run_resume(checkpoints[0])
+        else:
+            try:
+                idx = int(input("재개할 번호: ").strip()) - 1
+                if 0 <= idx < len(checkpoints):
+                    run_resume(checkpoints[idx])
+                else:
+                    print("⚠️  올바른 번호를 입력하세요.")
+            except ValueError:
+                print("⚠️  숫자를 입력하세요.")
+        return True
+
+    elif choice == "d":
+        for cp in checkpoints:
+            delete_checkpoint(cp["file_path"])
+        print("  🗑️  체크포인트 삭제 완료.")
+        return False
+
+    else:
+        return False
+
+
 def run_team() -> None:
     print("=" * 60)
     print("🤖 MVP AI Factory - Idea to MVP Pipeline")
     print("=" * 60)
+
+    # ── 체크포인트 복구 확인 ──────────────────────────────────────────────────
+    if _check_and_offer_resume():
+        return
+
     print()
     print("1. 신규 빌드")
     print("2. 기존 프로젝트 고도화")
