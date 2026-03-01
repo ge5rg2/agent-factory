@@ -9,6 +9,8 @@ client = genai.Client(
     api_key=os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 )
 
+_PM_MODEL = os.getenv("PM_MODEL", "gemini-2.5-flash")
+
 
 def _flatten_file_tree(tree: dict, prefix: str = "") -> dict:
     """중첩된 dict 구조의 file_tree를 flat한 {파일경로: 설명} 형태로 변환."""
@@ -39,6 +41,10 @@ def pm_agent(state: dict):
    - 게임/그래픽 프로젝트: 수학/벡터 유틸리티 파일 필수 포함 (예: src/utils/vector2.js)
    - 모든 공통 유틸리티는 utils/ 또는 helpers/ 디렉토리에 분리하여 file_tree에 포함
    - 암묵적 의존성(파일 트리에 없는데 코드에서 import)은 절대 허용하지 않습니다
+   - [Level-as-Code 규칙] 게임 맵/레벨 데이터는 절대로 .json 파일로 분리하지 마세요.
+     * ❌ 금지: assets/data/map01.json, data/level1.json (fetch로 읽으면 런타임 에러 발생)
+     * ✅ 필수: src/level_data.js 같은 JS 파일에 배열 상수로 직접 정의하여 import로 사용
+     * 예시: export const LEVEL_1 = [[1,1,1],[1,0,1],[1,1,1]]; (숫자: 1=벽, 0=빈공간)
 5. project_type 판별 규칙 (반드시 정확히 판별):
    - "frontend_only": 게임, SPA, 랜딩페이지 등 순수 프론트엔드 → Python 파일, requirements.txt 포함 금지
    - "fullstack": REST API + UI → backend/ + frontend/ 구조, requirements.txt 포함
@@ -81,7 +87,7 @@ def pm_agent(state: dict):
     response = None
     try:
         response = client.models.generate_content(
-            model='gemini-2.5-flash-lite',
+            model=_PM_MODEL,
             contents=prompt
         )
         raw = response.text.strip()
@@ -281,7 +287,7 @@ def pm_upgrade_agent(state: dict, upgrade_request: str) -> dict:
     response = None
     try:
         response = client.models.generate_content(
-            model='gemini-2.5-flash-lite',
+            model=_PM_MODEL,
             contents=prompt
         )
         raw = response.text.strip()

@@ -11,6 +11,7 @@ client = genai.Client(
     api_key=os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 )
 
+_QC_MODEL = os.getenv("QC_MODEL", "gemini-2.5-flash")
 MAX_FIX_ITERATIONS = 2
 
 
@@ -483,8 +484,18 @@ def _detect_missing_js_modules(codes: dict) -> list:
 
 # ── Gemini 코드 리뷰 & 수정 ───────────────────────────────────────────────────
 
-def _gemini_review_and_fix(prd: str, current_codes: dict, syntax_errors: list) -> dict:
-    """전체 코드베이스를 Gemini로 리뷰하고, 이슈와 수정 코드 반환."""
+def _gemini_review_and_fix(
+    prd: str,
+    current_codes: dict,
+    syntax_errors: list,
+    project_domain: str = "APP",
+) -> dict:
+    """전체 코드베이스를 Gemini로 리뷰하고, 이슈와 수정 코드 반환.
+
+    project_domain에 따라 도메인 특화 리뷰 항목을 추가합니다:
+    - GAME: Canvas 루프 무결성, 물리 연산, pixel_sprites 렌더링
+    - APP: DOM 조작 안정성, 이벤트 핸들러, API 연동
+    """
     files_block = "\n".join(
         f"\n--- {path} ---\n{code}" for path, code in current_codes.items()
     )
@@ -493,18 +504,68 @@ def _gemini_review_and_fix(prd: str, current_codes: dict, syntax_errors: list) -
         if syntax_errors else ""
     )
 
+    # ── 도메인별 중점 검토 항목 ───────────────────────────────────────────────
+    if project_domain == "GAME":
+        domain_review_section = """
+=== [GAME 도메인] 중점 검토 항목 ===
+이 프로젝트는 게임입니다. 아래 항목을 최우선으로 검토하세요:
+
+G1. Canvas 렌더링 무결성
+    - requestAnimationFrame 루프가 올바르게 시작/종료되는지 확인
+    - Canvas context(ctx) 취득이 null 체크 없이 사용되지 않는지 확인
+    - clearRect()가 매 프레임마다 호출되는지 확인 (화면 잔상 방지)
+    - drawSprite() 또는 픽셀 렌더링 함수가 실제로 호출되는지 확인
+
+G2. 의존성 주입 무결성
+    - 클래스 생성 시 필요한 의존성(map, config 등)이 생성자로 전달되는지 확인
+    - window.player, window.map 같은 전역 변수 참조가 없는지 확인
+    - new Player(map, config) 처럼 의존성 주입 패턴을 지키는지 확인
+
+G3. 게임 루프 물리 연산
+    - deltaTime(dt)이 update() 함수에 올바르게 전달되는지 확인
+    - 충돌 감지 로직에서 isWalkable() 등 계약된 메서드를 올바르게 호출하는지 확인
+    - 좌표 계산에서 NaN/Infinity 발생 가능성 확인
+
+G4. Level-as-Code 준수
+    - 맵/레벨 데이터가 fetch()로 외부 JSON을 읽지 않는지 확인
+    - 맵 데이터는 반드시 JS 파일의 배열 상수로 정의되어야 함
+    - fetch 실패로 검은 화면이 발생하는 패턴이 있으면 즉시 수정
+"""
+    else:
+        domain_review_section = """
+=== [APP 도메인] 중점 검토 항목 ===
+이 프로젝트는 웹 앱입니다. 아래 항목을 최우선으로 검토하세요:
+
+A1. DOM 조작 안정성
+    - querySelector(), getElementById() 결과가 null일 때 안전하게 처리하는지 확인
+    - DOMContentLoaded 이벤트 이후에 DOM 접근이 이루어지는지 확인
+    - 동적으로 생성된 요소에 이벤트 리스너가 올바르게 연결되는지 확인
+
+A2. 상태 관리 일관성
+    - 전역 변수(window.xxx, 전역 let/var) 사용 대신 클래스나 모듈 스코프 관리인지 확인
+    - 비동기 fetch 후 UI 업데이트가 적절히 이루어지는지 확인
+
+A3. API 연동 안정성
+    - fetch URL이 올바르게 구성되는지 (baseURL + endpoint)
+    - 에러 응답(4xx, 5xx)이 처리되는지 확인
+    - JSON 파싱 실패 시 예외 처리가 있는지 확인
+
+A4. Lucide 아이콘 초기화
+    - lucide.createIcons()가 DOM 로드 후 호출되는지 확인
+    - data-lucide 속성이 올바른 아이콘 이름을 사용하는지 확인
+"""
+
     prompt = f"""
 당신은 시니어 코드 리뷰어입니다.
 아래 코드베이스를 검토하고 문제를 발견하면 수정해주세요.
 
+프로젝트 도메인: {project_domain} ({"게임/Canvas 기반" if project_domain == "GAME" else "웹 앱/DOM 기반"})
+
 === 기획서 (PRD) ===
 {prd}
 {errors_block}
-
-=== 전체 코드베이스 ===
-{files_block}
-
-검토 항목:
+{domain_review_section}
+=== 공통 검토 항목 ===
 1. 문법 오류 및 런타임 에러 가능성
 2. Python import 누락 또는 잘못된 경로
    - [중요] 반드시 절대경로 import 사용 (`from backend.models import X` 형식)
@@ -516,6 +577,9 @@ def _gemini_review_and_fix(prd: str, current_codes: dict, syntax_errors: list) -
 4. 클래스/함수 인터페이스 불일치 (한 파일에서 호출하는 메서드가 다른 파일에 없는 경우)
 5. 프론트엔드-백엔드 API 연동 불일치 (URL, 메서드, 필드명)
 6. 기획서 대비 핵심 기능 누락
+
+=== 전체 코드베이스 ===
+{files_block}
 
 반드시 아래 JSON 형식으로만 답변하세요 (다른 텍스트 없이 JSON만):
 {{
@@ -535,7 +599,7 @@ def _gemini_review_and_fix(prd: str, current_codes: dict, syntax_errors: list) -
 """
 
     response = client.models.generate_content(
-        model='gemini-2.5-flash-lite',
+        model=_QC_MODEL,
         contents=prompt
     )
     raw = response.text.strip()
@@ -582,7 +646,7 @@ README.md에 반드시 포함할 항목:
 
     try:
         response = client.models.generate_content(
-            model='gemini-2.5-flash-lite',
+            model=_QC_MODEL,
             contents=prompt
         )
         readme_content = response.text.strip()
@@ -605,6 +669,7 @@ def qc_agent(state: dict) -> dict:
     output_dir = os.path.join("output", state["project_name"])
     codes = dict(state.get("codes", {}))
     prd = state.get("prd", "")
+    project_domain = state.get("project_domain", "APP")
 
     if not codes:
         state.update({"feedback": "검증할 코드가 없습니다.", "current_step": "ERROR"})
@@ -652,9 +717,9 @@ def qc_agent(state: dict) -> dict:
         else:
             print(f"  ✅ 문법 검사 통과")
 
-        # 3. Gemini 코드 리뷰
+        # 3. Gemini 코드 리뷰 (도메인 인지형)
         try:
-            result = _gemini_review_and_fix(prd, current_codes, syntax_errors)
+            result = _gemini_review_and_fix(prd, current_codes, syntax_errors, project_domain)
         except (json.JSONDecodeError, Exception) as e:
             print(f"  ⚠️  Gemini 리뷰 파싱 실패: {e}")
             break
