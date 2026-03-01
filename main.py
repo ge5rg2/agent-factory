@@ -100,9 +100,18 @@ def _run_phases_2_to_5(state: dict, log_path: str, from_phase: str = "PM_DONE") 
         design_spec = state.get("design_spec", {})
         theme = design_spec.get("theme", {})
         canvas_on = design_spec.get("canvas", {}).get("use_canvas", False)
+        domain = design_spec.get("project_domain", state.get("project_domain", "APP"))
+        has_sprites = "pixel_sprites" in design_spec
+        has_ui_comps = "ui_components" in design_spec
         print(f"\n✅ 디자인 스펙 완료!")
+        print(f"  🌐 Domain: {domain} ({'🎮 Canvas+Pixel' if domain == 'GAME' else '🖥️  DOM+Tailwind'})")
         print(f"  🎨 Primary: {theme.get('primary', '-')} / BG: {theme.get('background', '-')}")
-        print(f"  🖼️  Canvas: {'사용' if canvas_on else '미사용'}")
+        if domain == "GAME":
+            sprite_count = len([k for k in design_spec.get("pixel_sprites", {}) if k not in ("color_palette", "sprite_scale")])
+            print(f"  🕹️  Pixel Sprites: {sprite_count}개 {'✅' if has_sprites else '⚠️ 기본값'}")
+        else:
+            comp_count = len(design_spec.get("ui_components", {}))
+            print(f"  🧩 UI Components: {comp_count}개 {'✅' if has_ui_comps else '⚠️ 기본값'}")
 
         log_path = save_checkpoint(state, "DESIGNER_DONE")
     else:
@@ -153,6 +162,7 @@ def _run_phases_2_to_5(state: dict, log_path: str, from_phase: str = "PM_DONE") 
             "idea": state.get("idea", ""),
             "project_name": state["project_name"],
             "project_type": state.get("project_type", ""),
+            "project_domain": state.get("project_domain", "APP"),
             "prd": state["prd"],
             "file_tree": state["file_tree"],
             "interface_contracts": state.get("interface_contracts", {}),
@@ -204,6 +214,7 @@ def run_new_build() -> None:
         "idea": user_idea,
         "project_name": "",
         "project_type": "",
+        "project_domain": "",
         "prd": "",
         "file_tree": {},
         "interface_contracts": {},
@@ -226,7 +237,9 @@ def run_new_build() -> None:
         print(f"\n❌ 오류 발생: {state['feedback']}")
         return
 
-    print("\n✅ 기획 완료!\n")
+    domain = state.get("project_domain", "APP")
+    domain_icon = "🎮" if domain == "GAME" else "🖥️ "
+    print(f"\n✅ 기획 완료! [{domain_icon} {domain} | {state.get('project_type', '')}]\n")
     print("📄 PRD (Product Requirements Document):")
     print("-" * 60)
     print(state["prd"])
@@ -345,6 +358,7 @@ def run_upgrade() -> None:
         "idea": meta.get("idea", ""),
         "project_name": project_name,
         "project_type": meta.get("project_type", ""),
+        "project_domain": meta.get("project_domain", "APP"),
         "prd": meta.get("prd", ""),
         "file_tree": meta.get("file_tree", {}),
         "interface_contracts": meta.get("interface_contracts", {}),
@@ -393,7 +407,12 @@ def run_upgrade() -> None:
             state["design_spec"] = existing_spec
             state["codes"]["design_spec.json"] = existing_codes["design_spec.json"]
             state["current_step"] = "FRONTEND_DEVELOP"
+            # design_spec에 저장된 project_domain이 있으면 우선 사용
+            if "project_domain" in existing_spec:
+                state["project_domain"] = existing_spec["project_domain"]
             print("\n  ♻️  기존 design_spec.json 재사용 (디자인 일관성 유지)")
+            domain = state.get("project_domain", "APP")
+            print(f"  🌐 Domain: {domain} ({'🎮 Canvas+Pixel' if domain == 'GAME' else '🖥️  DOM+Tailwind'})")
         except (json.JSONDecodeError, KeyError):
             state = designer_agent(state)
             print("\n  🎨 디자인 스펙 새로 생성")
@@ -431,6 +450,7 @@ def run_upgrade() -> None:
         "idea": meta.get("idea", ""),
         "project_name": project_name,
         "project_type": state.get("project_type", meta.get("project_type", "")),
+        "project_domain": state.get("project_domain", meta.get("project_domain", "APP")),
         "prd": state["prd"],
         "file_tree": merged_file_tree,
         "interface_contracts": state.get("interface_contracts", meta.get("interface_contracts", {})),

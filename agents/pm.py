@@ -43,24 +43,37 @@ def pm_agent(state: dict):
    - "frontend_only": 게임, SPA, 랜딩페이지 등 순수 프론트엔드 → Python 파일, requirements.txt 포함 금지
    - "fullstack": REST API + UI → backend/ + frontend/ 구조, requirements.txt 포함
    - "backend_only": CLI, 데이터 처리 등 순수 백엔드
-6. interface_contracts: 여러 파일에서 참조되는 클래스/함수의 공개 API 계약
-   - 형식: {{ "파일경로": "class ClassName {{ method1(param: type): returnType; method2(): void; }}" }}
+6. project_domain 판별 규칙 (렌더링 전략을 결정하는 핵심 분류):
+   - "GAME": 게임, 시뮬레이션, 물리 엔진, 그래픽 집약적 인터랙션 → Canvas API 기반 렌더링
+     * GAME 특성: requestAnimationFrame 루프, 픽셀 단위 충돌 감지, 스프라이트/타일맵
+     * GAME 파일 구조 예시: src/core/engine.js, src/entities/player.js, src/utils/vector2.js
+   - "APP": 웹 앱, SPA, 대시보드, 도구, 랜딩페이지 → DOM + Event-driven 렌더링
+     * APP 특성: CRUD 인터페이스, 폼/입력, 목록/테이블, 페이지 라우팅
+     * APP 파일 구조 예시: src/components/layout.js, src/pages/home.js, src/utils/api.js
+7. interface_contracts: 여러 파일에서 참조되는 클래스/함수의 공개 API 계약
+   - 형식: {{ "파일경로": "class ClassName {{ constructor(dep1: Type, dep2: Type): void; method1(param: type): returnType; }}" }}
+   - [의존성 주입 필수] 생성자에서 의존 객체를 명시적으로 받도록 설계:
+     * GAME 예시: class Player {{ constructor(map: Map, config: object): void; update(dt: number): void; }}
+     * GAME 예시: class Map {{ constructor(data: number[][]): void; isWalkable(x,y,size): bool; getGrid(): number[][]; }}
+     * APP 예시: class ApiClient {{ constructor(baseUrl: string): void; get(endpoint: string): Promise; }}
    - 파일 간 인터페이스 불일치가 런타임 에러의 주요 원인입니다. 모든 주요 클래스에 계약 작성 필수
-   - 예시: {{ "src/map.js": "class Map {{ loadData(data): void; isWalkable(x,y,size): bool; getGrid(): number[][]; }}" }}
+   - undefined 참조 에러를 원천 차단하려면 필요한 모든 의존성을 생성자 파라미터로 명시하세요
 
 반드시 아래 JSON 형식으로만 답변하세요 (다른 텍스트 없이 JSON만):
 {{
     "project_name": "doom_fps_game",
     "project_type": "frontend_only",
+    "project_domain": "GAME",
     "prd": "기획 상세 내용 - 반드시 문자열로",
     "file_tree": {{
         "index.html": "메인 HTML 진입점",
-        "src/game.js": "게임 루프 및 상태 관리",
+        "src/core/engine.js": "게임 루프 및 렌더링 엔진",
+        "src/entities/player.js": "플레이어 엔티티 (map, config 의존성 주입)",
         "src/utils/vector2.js": "2D 벡터 수학 유틸리티 클래스"
     }},
     "interface_contracts": {{
-        "src/map.js": "class Map {{ loadData(data): void; isWalkable(x,y,size): bool; getGrid(): number[][]; getWidth(): int; getHeight(): int; }}",
-        "src/player.js": "class Player {{ constructor(x,y,angle): void; update(deltaTime,map): void; takeDamage(amount): void; isAlive(): bool; getPosition(): {{x,y}}; }}"
+        "src/map.js": "class Map {{ constructor(levelData: number[][]): void; isWalkable(x: number, y: number, size: number): bool; getGrid(): number[][]; getWidth(): number; getHeight(): number; }}",
+        "src/entities/player.js": "class Player {{ constructor(map: Map, config: {{startX: number, startY: number, fov: number}}): void; update(deltaTime: number): void; takeDamage(amount: number): void; isAlive(): bool; getPosition(): {{x: number, y: number}}; }}"
     }}
 }}
 """
@@ -93,10 +106,17 @@ def pm_agent(state: dict):
             interface_contracts = {}
 
         project_type = result.get("project_type", "fullstack")
+        project_domain = result.get("project_domain", "APP")
+        if project_domain not in ("GAME", "APP"):
+            project_domain = "GAME" if any(
+                kw in state.get("idea", "").lower()
+                for kw in ("game", "게임", "fps", "rpg", "puzzle", "퍼즐", "simulation", "시뮬")
+            ) else "APP"
 
         state.update({
             "project_name": result.get("project_name", "mvp_project"),
             "project_type": project_type,
+            "project_domain": project_domain,
             "prd": prd,
             "file_tree": file_tree,
             "interface_contracts": interface_contracts,
@@ -125,6 +145,7 @@ def pm_agent(state: dict):
                     state.update({
                         "project_name": result.get("project_name", "mvp_project"),
                         "project_type": result.get("project_type", "fullstack"),
+                        "project_domain": result.get("project_domain", "APP"),
                         "prd": prd,
                         "file_tree": file_tree,
                         "interface_contracts": result.get("interface_contracts", {}),
@@ -139,6 +160,7 @@ def pm_agent(state: dict):
         state.update({
             "project_name": "mvp_project",
             "project_type": "fullstack",
+            "project_domain": "APP",
             "prd": response.text if response else "",
             "file_tree": {},
             "interface_contracts": {},
@@ -153,6 +175,7 @@ def pm_agent(state: dict):
         state.update({
             "project_name": "mvp_project",
             "project_type": "fullstack",
+            "project_domain": "APP",
             "prd": "",
             "file_tree": {},
             "interface_contracts": {},
@@ -164,12 +187,37 @@ def pm_agent(state: dict):
 
 
 def pm_upgrade_agent(state: dict, upgrade_request: str) -> dict:
-    """기존 프로젝트를 분석하여 고도화 델타 계획을 수립하는 에이전트."""
+    """기존 프로젝트를 분석하여 고도화 델타 계획을 수립하는 에이전트.
+
+    Safe-Update Logic:
+    - 기존 렌더링 방식(Canvas Loop vs DOM Event)을 판별하고 보존합니다.
+    - 변경이 필요한 파일만 델타로 반환하여 기존 엔진을 파괴하지 않습니다.
+    """
     existing_prd = state.get("prd", "")
     existing_file_tree = state.get("file_tree", {})
     existing_codes = state.get("codes", {})
+    project_domain = state.get("project_domain", "APP")
 
     file_list = "\n".join(f"- {path}: {desc}" for path, desc in existing_file_tree.items())
+
+    # ── 기존 렌더링 방식 탐지 (Safe-Update를 위한 분석) ──────────────────────
+    rendering_type = "unknown"
+    has_raf = any(
+        "requestAnimationFrame" in code or "gameLoop" in code or "game_loop" in code
+        for code in existing_codes.values()
+    )
+    has_canvas = any(
+        "getContext" in code or "ctx.draw" in code or "canvas" in code.lower()
+        for code in existing_codes.values()
+    )
+    has_event_listener = any(
+        "addEventListener" in code or "querySelector" in code
+        for code in existing_codes.values()
+    )
+    if has_raf or has_canvas:
+        rendering_type = "CANVAS_LOOP"
+    elif has_event_listener:
+        rendering_type = "DOM_EVENT"
 
     preview_files = [
         p for p in existing_codes
@@ -180,9 +228,24 @@ def pm_upgrade_agent(state: dict, upgrade_request: str) -> dict:
         lines = existing_codes[path].splitlines()[:25]
         code_preview += f"\n--- {path} (첫 {len(lines)}줄) ---\n" + "\n".join(lines) + "\n"
 
+    rendering_note = {
+        "CANVAS_LOOP": "기존 프로젝트는 Canvas + requestAnimationFrame 기반 게임 루프를 사용합니다. "
+                       "새 기능은 이 루프 안에서 동작하도록 설계하고, DOM 이벤트 방식으로 대체하지 마세요.",
+        "DOM_EVENT": "기존 프로젝트는 DOM + 이벤트 리스너 방식을 사용합니다. "
+                     "새 기능도 DOM 조작과 이벤트 방식으로 구현하고, Canvas 루프를 추가하지 마세요.",
+        "unknown": "기존 렌더링 방식을 판별할 수 없습니다. 기존 파일 구조와 일관성을 유지하세요.",
+    }.get(rendering_type, "")
+
     prompt = f"""
 당신은 MVP 전문 기획자(PM)입니다.
 기존 프로젝트에 새 기능을 추가하거나 수정하는 고도화 계획을 수립해주세요.
+
+=== 프로젝트 도메인 ===
+{project_domain} ({"게임/그래픽 엔진" if project_domain == "GAME" else "웹 앱/SPA"})
+
+=== [Safe-Update] 기존 렌더링 방식 ===
+감지된 렌더링 타입: {rendering_type}
+{rendering_note}
 
 === 기존 기획서 (PRD) ===
 {existing_prd}
@@ -200,6 +263,8 @@ def pm_upgrade_agent(state: dict, upgrade_request: str) -> dict:
 - 요청사항을 구현하기 위해 반드시 변경/추가해야 하는 파일만 delta_file_tree에 포함하세요
 - 변경 없는 파일은 절대 포함하지 마세요
 - 새 파일 추가 시에는 기존 구조와 일관성을 유지하세요
+- [Safe-Update] 기존 렌더링 엔진(Canvas Loop 또는 DOM Event)을 파괴하지 마세요
+- [Safe-Update] 기능 추가는 기존 방식의 확장이어야 하며, 방식 교체는 안됩니다
 
 반드시 아래 JSON 형식으로만 답변하세요 (다른 텍스트 없이 JSON만):
 {{
@@ -208,6 +273,7 @@ def pm_upgrade_agent(state: dict, upgrade_request: str) -> dict:
         "수정이_필요한_파일_경로": "이 파일에서 무엇을 변경할지 설명",
         "새로_추가할_파일_경로": "이 새 파일의 역할 설명"
     }},
+    "rendering_preserved": "기존 렌더링 방식을 어떻게 보존했는지 설명",
     "change_summary": "고도화 변경사항 한 줄 요약 (한국어)"
 }}
 """
@@ -233,6 +299,10 @@ def pm_upgrade_agent(state: dict, upgrade_request: str) -> dict:
         updated_prd = result.get("updated_prd", existing_prd)
         if isinstance(updated_prd, dict):
             updated_prd = json.dumps(updated_prd, ensure_ascii=False, indent=2)
+
+        rendering_preserved = result.get("rendering_preserved", "")
+        if rendering_preserved:
+            print(f"  🔒 렌더링 보존: {rendering_preserved}")
 
         state.update({
             "prd": updated_prd,
