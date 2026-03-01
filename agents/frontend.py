@@ -9,6 +9,8 @@ client = genai.Client(
     api_key=os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 )
 
+_FE_MODEL = os.getenv("FE_MODEL", "gemini-2.5-flash")
+
 _FRONTEND_EXTENSIONS = {".html", ".css", ".js", ".ts", ".tsx", ".jsx", ".vue", ".svelte"}
 _FRONTEND_DIR_PREFIXES = ("frontend", "static", "public", "src", "client", "web", "templates")
 
@@ -221,43 +223,61 @@ def frontend_agent(state: dict) -> dict:
 공통 요구사항:
 1. 실제로 실행 가능한 완전한 코드를 작성하세요 (절대 잘리거나 생략하지 마세요)
 2. [매우 중요] 이미지 파일(img 태그 src, background-image url()) 절대 사용 금지
-3. 주석 최소화, 코드 자체가 명확하도록 작성
-4. 백엔드 API 연동 시: fetch API 사용, baseURL = 'http://localhost:8000'
-{"5. Canvas 렌더링: pixel_sprites 데이터를 사용해 drawSprite 함수로 렌더링" if is_game else "5. Tailwind CDN + Lucide CDN 로드 후 lucide.createIcons() 호출"}
-{"6. requestAnimationFrame 기반 게임 루프 필수" if is_game else "6. 반응형 레이아웃 (모바일 우선, Tailwind 반응형 프리픽스 사용)"}
-{"7. 게임 루프 구조: update(dt) → render(ctx) → requestAnimationFrame" if is_game else "7. 컬러 팔레트: primary=" + theme.get("primary", "blue-500") + ", bg=" + theme.get("background", "gray-50")}
+3. [매우 중요 — Strict DI] 전역 변수 사용 절대 금지:
+   - ❌ 금지: window.player, window.map, global let player, var game (전역 스코프)
+   - ✅ 필수: 모든 상태는 최상위 Game/App 클래스가 보유하고, 하위 인스턴스에 생성자로 전달
+   - 예시: class Game {{ constructor() {{ this.map = new Map(LEVEL_1); this.player = new Player(this.map, config); }} }}
+   - Game/App 외부에서 참조가 필요한 경우 getter 메서드나 이벤트로 전달
+4. 주석 최소화, 코드 자체가 명확하도록 작성
+5. 백엔드 API 연동 시: fetch API 사용, baseURL = 'http://localhost:8000'
+{"6. Canvas 렌더링: pixel_sprites 데이터를 사용해 drawSprite 함수로 렌더링" if is_game else "6. Tailwind CDN + Lucide CDN 로드 후 lucide.createIcons() 호출"}
+{"7. requestAnimationFrame 기반 게임 루프 필수" if is_game else "7. 반응형 레이아웃 (모바일 우선, Tailwind 반응형 프리픽스 사용)"}
+{"8. 게임 루프 구조: update(dt) → render(ctx) → requestAnimationFrame" if is_game else "8. 컬러 팔레트: primary=" + theme.get("primary", "blue-500") + ", bg=" + theme.get("background", "gray-50")}
 
-반드시 아래 JSON 형식으로만 답변하세요 (다른 텍스트 없이 JSON만):
-{{
-    "code": "파일의 전체 코드 내용"
-}}
+파일 확장자에 맞는 마크다운 코드 블록으로만 답변하세요. JSON 형식 사용 금지.
+출력 형식 예시 (HTML 파일인 경우):
+```html
+<!DOCTYPE html>
+<html>
+... 전체 코드 ...
+</html>
+```
+
+출력 형식 예시 (JS 파일인 경우):
+```javascript
+// 전체 코드
+export class Game {{ ... }}
+```
+
+[필수] 코드 블록 앞뒤에 다른 텍스트나 설명을 추가하지 마세요.
+[필수] 코드가 아무리 길어도 절대 생략하거나 잘라내지 마세요.
 """
 
         response = None
         try:
             response = client.models.generate_content(
-                model="gemini-2.5-flash-lite",
+                model=_FE_MODEL,
                 contents=prompt,
             )
             raw = response.text.strip()
-            if raw.startswith("```"):
-                raw = re.sub(r"^```(?:json)?\n?", "", raw)
-                raw = re.sub(r"\n?```$", "", raw.strip())
-            result = json.loads(raw)
-            codes[file_path] = result.get("code", "")
 
-        except json.JSONDecodeError:
-            if response:
-                try:
-                    json_match = re.search(r"\{.*\}", response.text, re.DOTALL)
-                    if json_match:
-                        result = json.loads(json_match.group())
-                        codes[file_path] = result.get("code", "")
-                    else:
-                        code_match = re.search(r"```(?:\w+)?\n(.*?)```", response.text, re.DOTALL)
-                        codes[file_path] = code_match.group(1) if code_match else response.text
-                except (json.JSONDecodeError, AttributeError):
-                    codes[file_path] = response.text if response else ""
+            # ── 1순위: 마크다운 코드 블록 추출 ──────────────────────────────
+            code_match = re.search(r"```(?:[\w+\-]*)\n(.*?)```", raw, re.DOTALL)
+            if code_match:
+                codes[file_path] = code_match.group(1).rstrip()
+                continue  # 성공 → 다음 파일로
+
+            # ── 2순위: JSON {"code": ...} 파싱 (하위 호환) ──────────────────
+            try:
+                json_str = raw
+                if raw.startswith("```"):
+                    json_str = re.sub(r"^```(?:json)?\n?", "", raw)
+                    json_str = re.sub(r"\n?```$", "", json_str.strip())
+                result = json.loads(json_str)
+                codes[file_path] = result.get("code", raw)
+            except (json.JSONDecodeError, ValueError):
+                # ── 3순위: 응답 전체를 코드로 사용 ─────────────────────────
+                codes[file_path] = raw
 
         except Exception as e:
             print(f"  ⚠️  {file_path} 생성 실패: {e}")
