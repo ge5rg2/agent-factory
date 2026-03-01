@@ -9,6 +9,8 @@ client = genai.Client(
     api_key=os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 )
 
+_BE_MODEL = os.getenv("BE_MODEL", "gemini-2.5-flash")
+
 _FRONTEND_EXTENSIONS = {".html", ".css", ".js", ".ts", ".tsx", ".jsx", ".vue", ".svelte"}
 _FRONTEND_DIR_PREFIXES = ("frontend", "static", "public", "src", "client", "web", "templates")
 
@@ -106,7 +108,7 @@ def backend_agent(state: dict) -> dict:
 파일 역할: {file_description}
 
 요구사항:
-1. 실제로 실행 가능한 완전한 코드를 작성하세요
+1. 실제로 실행 가능한 완전한 코드를 작성하세요 (절대 생략 없이 전체 코드)
 2. FastAPI 기반으로 구현하세요 (CORS 설정 포함)
 3. [중요] 프로젝트 내 모듈 import 시 반드시 절대경로 import 사용
    - ✅ from backend.models import Customer
@@ -126,37 +128,43 @@ def backend_agent(state: dict) -> dict:
 6. Pydantic v2 문법: model_config = ConfigDict(from_attributes=True)
 7. SQLAlchemy 2.0 문법: from sqlalchemy.orm import DeclarativeBase
 
-반드시 아래 JSON 형식으로만 답변하세요 (다른 텍스트 없이 JSON만):
-{{
-    "code": "파일의 전체 코드 내용"
-}}
+파일 확장자에 맞는 마크다운 코드 블록으로만 답변하세요. JSON 형식 사용 금지.
+출력 형식 예시 (Python 파일인 경우):
+```python
+# 전체 코드
+from fastapi import FastAPI
+...
+```
+
+[필수] 코드 블록 앞뒤에 다른 텍스트나 설명을 추가하지 마세요.
+[필수] 코드가 아무리 길어도 절대 생략하거나 잘라내지 마세요.
 """
 
         response = None
         try:
             response = client.models.generate_content(
-                model="gemini-2.5-flash-lite",
+                model=_BE_MODEL,
                 contents=prompt,
             )
             raw = response.text.strip()
-            if raw.startswith("```"):
-                raw = re.sub(r"^```(?:json)?\n?", "", raw)
-                raw = re.sub(r"\n?```$", "", raw.strip())
-            result = json.loads(raw)
-            codes[file_path] = result.get("code", "")
 
-        except json.JSONDecodeError:
-            if response:
-                try:
-                    json_match = re.search(r"\{.*\}", response.text, re.DOTALL)
-                    if json_match:
-                        result = json.loads(json_match.group())
-                        codes[file_path] = result.get("code", "")
-                    else:
-                        code_match = re.search(r"```(?:\w+)?\n(.*?)```", response.text, re.DOTALL)
-                        codes[file_path] = code_match.group(1) if code_match else response.text
-                except (json.JSONDecodeError, AttributeError):
-                    codes[file_path] = response.text if response else ""
+            # ── 1순위: 마크다운 코드 블록 추출 ──────────────────────────────
+            code_match = re.search(r"```(?:[\w+\-]*)\n(.*?)```", raw, re.DOTALL)
+            if code_match:
+                codes[file_path] = code_match.group(1).rstrip()
+                continue  # 성공 → 다음 파일로
+
+            # ── 2순위: JSON {"code": ...} 파싱 (하위 호환) ──────────────────
+            try:
+                json_str = raw
+                if raw.startswith("```"):
+                    json_str = re.sub(r"^```(?:json)?\n?", "", raw)
+                    json_str = re.sub(r"\n?```$", "", json_str.strip())
+                result = json.loads(json_str)
+                codes[file_path] = result.get("code", raw)
+            except (json.JSONDecodeError, ValueError):
+                # ── 3순위: 응답 전체를 코드로 사용 ─────────────────────────
+                codes[file_path] = raw
 
         except Exception as e:
             print(f"  ⚠️  {file_path} 생성 실패: {e}")

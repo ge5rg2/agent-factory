@@ -9,6 +9,8 @@ client = genai.Client(
     api_key=os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 )
 
+_DESIGNER_MODEL = os.getenv("DESIGNER_MODEL", "gemini-2.5-flash-lite")
+
 
 def _default_design_spec(project_domain: str = "APP") -> dict:
     """파싱 실패 시 사용할 범용 기본 디자인 스펙."""
@@ -250,7 +252,7 @@ Frontend 에이전트가 이 ui_components 데이터로 DOM 요소를 구성합�
     response = None
     try:
         response = client.models.generate_content(
-            model="gemini-2.5-flash-lite",
+            model=_DESIGNER_MODEL,
             contents=prompt,
         )
         raw = response.text.strip()
