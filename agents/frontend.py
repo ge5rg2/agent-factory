@@ -3,6 +3,7 @@ import os
 import json
 import re
 from dotenv import load_dotenv
+from agents.utils import staff_log
 
 load_dotenv()
 client = genai.Client(
@@ -136,6 +137,29 @@ function createCard(title, content) {{
 """
 
 
+def _generate_planning_thought(prd: str, fe_files: dict, domain: str, model: str) -> str:
+    """파일 생성 루프 전에 프론트엔드 개발 계획을 요약하는 단일 LLM 호출."""
+    files_list = ", ".join(fe_files.keys())
+    prompt = f"""당신은 시니어 프론트엔드 개발자입니다.
+아래 프로젝트의 프론트엔드 개발 전략을 1-2문장으로 설명하세요.
+
+도메인: {domain} ({"게임/Canvas 기반" if domain == "GAME" else "웹 앱/DOM 기반"})
+생성할 파일: {files_list}
+기획 요약: {prd[:400]}
+
+반드시 아래 JSON 형식으로만 답변하세요:
+{{"thought": "이 프론트엔드 작업의 핵심 전략과 선택 이유 (1-2문장)"}}"""
+    try:
+        response = client.models.generate_content(model=model, contents=prompt)
+        raw = response.text.strip()
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(?:json)?\n?", "", raw)
+            raw = re.sub(r"\n?```$", "", raw.strip())
+        return json.loads(raw).get("thought", "")
+    except Exception:
+        return ""
+
+
 def frontend_agent(state: dict) -> dict:
     """프론트엔드 파일을 생성하는 전문 에이전트.
 
@@ -175,6 +199,11 @@ def frontend_agent(state: dict) -> dict:
     all_contracts_str = "\n".join(
         f"- {path}: {contract}" for path, contract in interface_contracts.items()
     ) if interface_contracts else "(인터페이스 계약 없음)"
+
+    # 파일 루프 전 개발 계획 thought 생성
+    thought = _generate_planning_thought(prd, fe_files, project_domain, _FE_MODEL)
+    if thought:
+        staff_log(state, "FRONTEND", thought)
 
     for file_path, file_description in fe_files.items():
         print(f"  {'🎮' if is_game else '🎨'}  FE 생성 중: {file_path}")

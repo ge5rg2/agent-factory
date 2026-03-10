@@ -3,6 +3,7 @@ import os
 import json
 import re
 from dotenv import load_dotenv
+from agents.utils import staff_log
 
 load_dotenv()
 client = genai.Client(
@@ -67,6 +68,7 @@ def pm_agent(state: dict):
 
 반드시 아래 JSON 형식으로만 답변하세요 (다른 텍스트 없이 JSON만):
 {{
+    "thought": "이 프로젝트의 도메인 판별 이유와 파일 구조 설계 전략 (1-2문장)",
     "project_name": "doom_fps_game",
     "project_type": "frontend_only",
     "project_domain": "GAME",
@@ -97,6 +99,10 @@ def pm_agent(state: dict):
             raw = re.sub(r'\n?```$', '', raw.strip())
 
         result = json.loads(raw)
+
+        thought = result.get("thought", "")
+        if thought:
+            staff_log(state, "PM", thought)
 
         file_tree = result.get("file_tree", {})
         if any(isinstance(v, dict) for v in file_tree.values()):
@@ -274,6 +280,7 @@ def pm_upgrade_agent(state: dict, upgrade_request: str) -> dict:
 
 반드시 아래 JSON 형식으로만 답변하세요 (다른 텍스트 없이 JSON만):
 {{
+    "thought": "이 고도화 요청의 핵심 변경사항과 접근 전략 (1-2문장)",
     "updated_prd": "업데이트된 기획서 전체 (기존 내용 + 새 기능 반영)",
     "delta_file_tree": {{
         "수정이_필요한_파일_경로": "이 파일에서 무엇을 변경할지 설명",
@@ -296,6 +303,10 @@ def pm_upgrade_agent(state: dict, upgrade_request: str) -> dict:
             raw = re.sub(r'\n?```$', '', raw.strip())
 
         result = json.loads(raw)
+
+        thought = result.get("thought", "")
+        if thought:
+            staff_log(state, "PM", thought)
 
         delta_file_tree = result.get("delta_file_tree", {})
         if any(isinstance(v, dict) for v in delta_file_tree.values()):

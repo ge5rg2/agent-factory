@@ -1,4 +1,4 @@
-from typing import TypedDict, Dict, Any, Optional
+from typing import TypedDict, Dict, Any, Optional, List
 
 
 class AgentState(TypedDict):
@@ -15,3 +15,6 @@ class AgentState(TypedDict):
     current_step: str                      # 현재 진행 단계
     mode: str                              # 실행 모드: "new" | "upgrade"
     log_path: Optional[str]               # 체크포인트 로그 파일 경로
+    history: List[str]                     # 누적 작업 로그 (Phase별 상세 이벤트, UI 스트리밍용)
+    deploy_url: Optional[str]              # 배포된 서비스 URL (DevOps 에이전트 저장)
+    staff_logs: List[Dict[str, Any]]       # 에이전트 사고 과정 누적 (UI 실시간 표시용)
