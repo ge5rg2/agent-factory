@@ -4,6 +4,7 @@ import os
 import json
 import re
 from dotenv import load_dotenv
+from agents.utils import staff_log
 
 load_dotenv()
 client = genai.Client(
@@ -230,6 +231,7 @@ Frontend 에이전트가 이 ui_components 데이터로 DOM 요소를 구성합�
     }"""
 
     # ── 디자인 서칭: 스타일 레퍼런스 사전 검색 ──────────────────────────────────
+    staff_log(state, "DESIGNER", "사용자가 요청한 스타일을 분석하기 위해 최신 레퍼런스를 검색 중입니다")
     print(f"  🔍 스타일 레퍼런스 검색 중...")
     style_reference = _search_style_reference(idea, project_domain, _DESIGNER_MODEL)
     style_section = f"""
@@ -263,6 +265,7 @@ Frontend 에이전트가 이 ui_components 데이터로 DOM 요소를 구성합�
 
 반드시 아래 JSON 형식으로만 답변하세요 (다른 텍스트 없이 JSON만):
 {{
+    "thought": "이 프로젝트의 디자인 전략과 색상/컴포넌트 선택 이유 (1-2문장)",
     "project_domain": "{project_domain}",
     "theme": {{
         "primary": "Tailwind 색상 클래스명 (예: blue-500)",
@@ -312,6 +315,9 @@ Frontend 에이전트가 이 ui_components 데이터로 DOM 요소를 구성합�
             raw = re.sub(r"\n?```$", "", raw.strip())
 
         design_spec = json.loads(raw)
+        thought = design_spec.pop("thought", "")
+        if thought:
+            staff_log(state, "DESIGNER", thought)
 
     except json.JSONDecodeError as e:
         print(f"  ⚠️  Designer JSON 파싱 오류 → 기본 스펙 사용: {e}")

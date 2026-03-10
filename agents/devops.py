@@ -14,6 +14,7 @@ import os
 import subprocess
 import time
 from datetime import datetime
+from agents.utils import staff_log
 
 # requests 선택적 의존성 (Vercel API 사용 시 필요)
 try:
@@ -160,10 +161,12 @@ def devops_agent(state: dict) -> dict:
 
     # ── DEPLOY_PLATFORM 미설정 → 배포 건너뜀 ────────────────────────────────
     if not _DEPLOY_PLATFORM:
+        staff_log(state, "DEVOPS", "배포 플랫폼이 설정되지 않아 로컬 output/ 디렉토리에만 저장합니다. DEPLOY_PLATFORM 환경변수를 설정하면 자동 배포가 활성화됩니다.")
         _log(state, "⏭️  DEPLOY_PLATFORM 미설정 → 배포 건너뜀 (로컬 output/ 디렉토리 사용)")
         state.update({"deploy_url": None, "current_step": "DONE"})
         return state
 
+    staff_log(state, "DEVOPS", f"배포 환경을 구성하고 있습니다. {_DEPLOY_PLATFORM.upper()} 플랫폼에 빌드 산출물을 업로드할 준비를 합니다.")
     _log(state, f"🚀 배포 시작: platform={_DEPLOY_PLATFORM.upper()}, project={project_name}")
 
     # ── Vercel 배포 (frontend_only 권장) ─────────────────────────────────────
@@ -177,12 +180,15 @@ def devops_agent(state: dict) -> dict:
             _log(state, f"  ℹ️  project_type={project_type} — Vercel은 정적 파일만 배포합니다 (백엔드 코드 제외)")
 
         try:
+            staff_log(state, "DEVOPS", f"총 파일을 Vercel 서버에 업로드하는 중입니다. SHA1 중복 제거로 변경된 파일만 전송됩니다.")
             _log(state, f"  📤 파일 업로드 중: {output_dir}/")
             deploy_url = _deploy_vercel(output_dir, project_name, _VERCEL_TOKEN)
+            staff_log(state, "DEVOPS", f"배포가 완료되었습니다! 서비스가 곧 접속 가능합니다: {deploy_url}")
             _log(state, f"  ✅ Vercel 배포 완료: {deploy_url}")
             state.update({"deploy_url": deploy_url, "current_step": "DONE"})
 
         except Exception as e:
+            staff_log(state, "DEVOPS", f"Vercel 배포 중 오류가 발생했습니다. 로컬 output/ 디렉토리에서 수동으로 배포해 주세요.")
             _log(state, f"  ❌ Vercel 배포 실패: {e}")
             state.update({"deploy_url": None, "current_step": "DONE"})
 
@@ -194,12 +200,15 @@ def devops_agent(state: dict) -> dict:
             return state
 
         try:
+            staff_log(state, "DEVOPS", "Railway 서비스를 시작하고 배포 파이프라인을 실행합니다. 빌드 완료 후 도메인이 자동 생성됩니다.")
             _log(state, f"  🚂 Railway 배포 중: {output_dir}/")
             deploy_url = _deploy_railway(output_dir, project_name, _RAILWAY_TOKEN)
+            staff_log(state, "DEVOPS", f"배포가 완료되었습니다! 서비스가 곧 접속 가능합니다: {deploy_url}")
             _log(state, f"  ✅ Railway 배포 완료: {deploy_url}")
             state.update({"deploy_url": deploy_url, "current_step": "DONE"})
 
         except Exception as e:
+            staff_log(state, "DEVOPS", f"Railway 배포 중 오류가 발생했습니다. Railway CLI 설치 여부를 확인해 주세요.")
             _log(state, f"  ❌ Railway 배포 실패: {e}")
             _log(state, "  💡 Railway CLI가 설치되어 있는지 확인하세요: npm install -g @railway/cli")
             state.update({"deploy_url": None, "current_step": "DONE"})
