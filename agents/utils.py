@@ -18,3 +18,18 @@ def staff_log(state: dict, agent: str, message: str) -> None:
     }
     state.setdefault("staff_logs", []).append(entry)
     print(f"  💭 [{agent}] {message}")
+
+
+def build_log(state: dict, message: str) -> None:
+    """빌드 이벤트를 state['history']에 기록하고 콘솔에 출력.
+
+    에이전트 내 print() 대체용 — 터미널 출력과 빌드 로그를 동기화합니다.
+
+    Args:
+        state: AgentState dict (history 필드에 누적)
+        message: 이벤트 메시지
+    """
+    ts = datetime.now().strftime("%H:%M:%S")
+    line = f"[{ts}] {message}"
+    state.setdefault("history", []).append(line)
+    print(line)

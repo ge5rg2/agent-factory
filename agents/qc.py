@@ -5,7 +5,7 @@ import json
 import re
 import subprocess
 from dotenv import load_dotenv
-from agents.utils import staff_log
+from agents.utils import staff_log, build_log
 
 load_dotenv()
 client = genai.Client(
@@ -531,6 +531,12 @@ G4. Level-as-Code 준수
     - 맵/레벨 데이터가 fetch()로 외부 JSON을 읽지 않는지 확인
     - 맵 데이터는 반드시 JS 파일의 배열 상수로 정의되어야 함
     - fetch 실패로 검은 화면이 발생하는 패턴이 있으면 즉시 수정
+
+G5. ESM 모듈 규칙 준수 (전역 변수 오염 방지)
+    - window.xxx = ... 전역 변수 할당이 있으면 반드시 제거/수정
+    - 최상위 스코프의 let/var/const 선언(export 없이)이 있으면 클래스/모듈로 이동
+    - import/export 없는 <script> 내 비즈니스 로직이 HTML에 있으면 별도 .js 파일로 분리
+    - require() / module.exports 방식이 있으면 ESM(import/export)으로 교체
 """
     else:
         domain_review_section = """
@@ -554,6 +560,17 @@ A3. API 연동 안정성
 A4. Lucide 아이콘 초기화
     - lucide.createIcons()가 DOM 로드 후 호출되는지 확인
     - data-lucide 속성이 올바른 아이콘 이름을 사용하는지 확인
+
+A5. Anti-Smashing — Ghost File 탐지 (선언만 하고 로직은 HTML에 있는 패턴)
+    - file_tree에 src/components/xxx.js 등 JS 파일이 선언되어 있는지 확인
+    - 실제 코드에서 해당 파일을 import하지 않고, index.html의 <script>에 로직이 집중되어 있으면 수정
+    - index.html 안에 50줄 이상의 비즈니스 로직 <script> 블록이 있으면 반드시 별도 파일로 분리
+    - `<script type="module" src="src/index.js">` 외의 <script> 태그 내 로직은 모두 .js 파일로 이동
+
+A6. 전역 변수 패턴 탐지 및 수정
+    - JS 파일 내 window.xxx = ..., document.xxx = ... 패턴 전역 할당이 있으면 제거
+    - 최상위 스코프 var/let/const (export 없이) 탐지 → 클래스 인스턴스 변수나 모듈 export로 리팩토링
+    - 모듈 간 공유 상태가 필요한 경우, 최상위 App/Game 클래스에 모아서 DI로 주입
 """
 
     prompt = f"""
@@ -680,18 +697,18 @@ def qc_agent(state: dict) -> dict:
     # 0-a. requirements.txt 유효성 검증 (존재하지 않거나 미사용 패키지 제거)
     req_removed = _fix_requirements_txt(output_dir, codes)
     if req_removed:
-        print(f"  🗑️  requirements.txt 유령 패키지 제거 ({len(req_removed)}건): {', '.join(req_removed)}")
+        build_log(state, f"🗑️  requirements.txt 유령 패키지 제거 ({len(req_removed)}건): {', '.join(req_removed)}")
 
     # 0-b. Python import 경로 사전 보정 (상대/bare → 절대경로, 중간 __init__.py 생성)
     import_fixes = _fix_python_imports(output_dir, codes)
     if import_fixes:
-        print(f"  🔧 Import 경로 사전 보정 ({len(import_fixes)}건): {', '.join(import_fixes)}")
+        build_log(state, f"🔧 Import 경로 사전 보정 ({len(import_fixes)}건): {', '.join(import_fixes)}")
 
     all_issues = []
     total_fixed_files = set()
 
     for iteration in range(1, MAX_FIX_ITERATIONS + 1):
-        print(f"  🔍 QC 검증 {iteration}회차...")
+        build_log(state, f"🔍 QC 검증 {iteration}회차...")
 
         # 1. output 디렉토리의 실제 파일 내용 읽기
         current_codes = {}
@@ -707,17 +724,17 @@ def qc_agent(state: dict) -> dict:
         # 2-b. JS/TS 누락 모듈 탐지 (import하는데 파일이 없는 경우)
         js_missing = _detect_missing_js_modules(codes)
         if js_missing:
-            print(f"  ⚠️  누락 JS 모듈 {len(js_missing)}건 탐지")
+            build_log(state, f"⚠️  누락 JS 모듈 {len(js_missing)}건 탐지")
             for msg in js_missing:
                 print(f"      {msg}")
             syntax_errors.extend(js_missing)
 
         if syntax_errors:
-            print(f"  ⚠️  문법/구조 오류 {len(syntax_errors)}건 발견")
+            build_log(state, f"⚠️  문법/구조 오류 {len(syntax_errors)}건 발견")
             for err in [e for e in syntax_errors if not e.startswith("[") or "JS import 누락" not in e]:
                 print(f"      {err}")
         else:
-            print(f"  ✅ 문법 검사 통과")
+            build_log(state, "✅ 문법 검사 통과")
 
         # 3. Gemini 코드 리뷰 (도메인 인지형)
         try:
@@ -737,13 +754,13 @@ def qc_agent(state: dict) -> dict:
 
         if issues:
             all_issues.extend(issues)
-            print(f"  📋 이슈 {len(issues)}건: {', '.join(issues[:2])}{'...' if len(issues) > 2 else ''}")
+            build_log(state, f"📋 이슈 {len(issues)}건: {', '.join(issues[:2])}{'...' if len(issues) > 2 else ''}")
 
         # 4. 수정 파일 적용
         new_files = result.get("new_files", {})
         if fixed_files or new_files:
             if fixed_files:
-                print(f"  🔧 {len(fixed_files)}개 파일 수정 적용 중...")
+                build_log(state, f"🔧 {len(fixed_files)}개 파일 수정 적용 중...")
                 for file_path, fixed_code in fixed_files.items():
                     full_path = os.path.join(output_dir, file_path)
                     parent = os.path.dirname(full_path)
@@ -755,7 +772,7 @@ def qc_agent(state: dict) -> dict:
                     total_fixed_files.add(file_path)
 
             if new_files:
-                print(f"  ✨ {len(new_files)}개 누락 파일 신규 생성 중...")
+                build_log(state, f"✨ {len(new_files)}개 누락 파일 신규 생성 중...")
                 for file_path, new_code in new_files.items():
                     full_path = os.path.join(output_dir, file_path)
                     parent = os.path.dirname(full_path)
@@ -765,14 +782,14 @@ def qc_agent(state: dict) -> dict:
                         f.write(new_code)
                     codes[file_path] = new_code
                     total_fixed_files.add(file_path)
-                    print(f"      ✅ {file_path}")
+                    build_log(state, f"    ✅ {file_path} 생성")
 
-            print(f"  ✅ 적용 완료")
+            build_log(state, "✅ 적용 완료")
         else:
-            print(f"  ✅ 추가 수정 필요 없음")
+            build_log(state, "✅ 추가 수정 필요 없음")
             # 이슈도 없고 수정/생성도 없으면 조기 종료
             if not issues and not syntax_errors and not new_files:
-                print(f"\n  📝 README.md 생성 중...")
+                build_log(state, "📝 README.md 생성 중...")
                 _generate_readme(state, output_dir, codes)
                 state.update({
                     "codes": codes,
@@ -783,7 +800,7 @@ def qc_agent(state: dict) -> dict:
             break  # 이슈는 있었지만 이미 직전 iteration에서 수정 완료
 
     # ── README 생성 & 최종 리포트 ─────────────────────────────────────────────
-    print(f"\n  📝 README.md 생성 중...")
+    build_log(state, "📝 README.md 생성 중...")
     _generate_readme(state, output_dir, codes)
 
     final_errors = _run_syntax_checks(output_dir, codes)

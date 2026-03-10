@@ -3,7 +3,7 @@ import os
 import json
 import re
 from dotenv import load_dotenv
-from agents.utils import staff_log
+from agents.utils import staff_log, build_log
 
 load_dotenv()
 client = genai.Client(
@@ -79,7 +79,7 @@ def backend_agent(state: dict) -> dict:
     # 순수 프론트엔드 프로젝트는 백엔드 생성 불필요
     if project_type == "frontend_only":
         if be_files:
-            print(f"  ⏭️  frontend_only 프로젝트 — BE 파일 생성 건너뜀 ({', '.join(be_files.keys())})")
+            build_log(state, f"⏭️  frontend_only 프로젝트 — BE 파일 생성 건너뜀 ({', '.join(be_files.keys())})")
         codes = state.get("codes", {})
         state.update({"codes": codes, "current_step": "QC"})
         return state
@@ -102,7 +102,7 @@ def backend_agent(state: dict) -> dict:
         staff_log(state, "BACKEND", thought)
 
     for file_path, file_description in be_files.items():
-        print(f"  ⚙️  BE 생성 중: {file_path}")
+        build_log(state, f"⚙️  BE 생성 중: {file_path}")
 
         existing_codes_context = ""
         if codes:
@@ -195,7 +195,7 @@ from fastapi import FastAPI
                 codes[file_path] = raw
 
         except Exception as e:
-            print(f"  ⚠️  {file_path} 생성 실패: {e}")
+            build_log(state, f"⚠️  {file_path} 생성 실패: {e}")
             codes[file_path] = f"# 생성 실패: {e}"
 
     state.update({

@@ -4,7 +4,7 @@ import os
 import json
 import re
 from dotenv import load_dotenv
-from agents.utils import staff_log
+from agents.utils import staff_log, build_log
 
 load_dotenv()
 client = genai.Client(
@@ -19,7 +19,7 @@ def _search_style_reference(idea: str, project_domain: str, model: str) -> str:
     """Google Search 그라운딩으로 프로젝트 스타일 레퍼런스를 검색.
 
     DESIGN_SEARCH=false 환경변수로 비활성화할 수 있습니다.
-    검색 실패 시 빈 문자열을 반환하여 파이프라인을 중단하지 않습니다.
+    검색 실패 시 _generate_style_fallback()으로 폴백하여 파이프라인을 중단하지 않습니다.
     """
     if not _DESIGN_SEARCH_ENABLED:
         return ""
@@ -50,7 +50,41 @@ def _search_style_reference(idea: str, project_domain: str, model: str) -> str:
         print(f"  🔍 스타일 검색 완료: {len(result)}자")
         return result
     except Exception as e:
-        print(f"  ⚠️  스타일 검색 실패 (건너뜀): {e}")
+        print(f"  ⚠️  스타일 검색 실패 → AI 폴백 생성: {e}")
+        return _generate_style_fallback(idea, project_domain, model)
+
+
+def _generate_style_fallback(idea: str, project_domain: str, model: str) -> str:
+    """Google Search 실패 시 검색 없이 LLM이 직접 스타일 레퍼런스를 추천.
+
+    503, API 오류 등으로 검색 그라운딩을 사용할 수 없을 때 폴백으로 호출됩니다.
+    결과에 '[AI 추천 - 검색 불가로 대체]' 태그를 포함하여 출처를 명확히 합니다.
+    """
+    domain_hint = "게임 픽셀아트/레트로 스타일" if project_domain == "GAME" else "웹 UI/UX 디자인 트렌드"
+    fallback_prompt = f"""다음 프로젝트 아이디어에 어울리는 시각적 스타일 레퍼런스를 추천해주세요.
+(웹 검색 없이 당신의 디자인 지식을 바탕으로 작성하세요)
+
+아이디어: "{idea}"
+도메인: {project_domain} ({domain_hint})
+
+아래 항목을 간결하게 정리하세요:
+1. 유사 게임/앱의 대표적인 색상 팔레트 (hex 코드 포함)
+2. 해당 스타일의 시각적 특징 (레트로 픽셀, 미니멀, 다크모드 등)
+3. {"픽셀 스프라이트 / 타일맵 배색 팁" if project_domain == "GAME" else "UI 레이아웃 패턴 및 컴포넌트 스타일 팁"}
+4. 추천 폰트 계열
+
+답변은 한국어로, 200자 이내로 핵심만 작성하세요."""
+
+    try:
+        response = client.models.generate_content(
+            model=model,
+            contents=fallback_prompt,
+        )
+        result = response.text.strip()
+        print(f"  🤖 스타일 AI 폴백 완료: {len(result)}자")
+        return f"[AI 추천 - 검색 불가로 대체]\n{result}"
+    except Exception as e:
+        print(f"  ⚠️  스타일 AI 폴백도 실패 (건너뜀): {e}")
         return ""
 
 
@@ -232,7 +266,7 @@ Frontend 에이전트가 이 ui_components 데이터로 DOM 요소를 구성합�
 
     # ── 디자인 서칭: 스타일 레퍼런스 사전 검색 ──────────────────────────────────
     staff_log(state, "DESIGNER", "사용자가 요청한 스타일을 분석하기 위해 최신 레퍼런스를 검색 중입니다")
-    print(f"  🔍 스타일 레퍼런스 검색 중...")
+    build_log(state, "🔍 스타일 레퍼런스 검색 중...")
     style_reference = _search_style_reference(idea, project_domain, _DESIGNER_MODEL)
     style_section = f"""
 === 웹 검색 기반 스타일 레퍼런스 ===
@@ -320,7 +354,7 @@ Frontend 에이전트가 이 ui_components 데이터로 DOM 요소를 구성합�
             staff_log(state, "DESIGNER", thought)
 
     except json.JSONDecodeError as e:
-        print(f"  ⚠️  Designer JSON 파싱 오류 → 기본 스펙 사용: {e}")
+        build_log(state, f"⚠️  Designer JSON 파싱 오류 → 기본 스펙 사용: {e}")
         if response:
             try:
                 match = re.search(r"\{.*\}", response.text, re.DOTALL)
@@ -334,7 +368,7 @@ Frontend 에이전트가 이 ui_components 데이터로 DOM 요소를 구성합�
             design_spec = _default_design_spec(project_domain)
 
     except Exception as e:
-        print(f"  ⚠️  Designer 에러 → 기본 스펙 사용: {e}")
+        build_log(state, f"⚠️  Designer 에러 → 기본 스펙 사용: {e}")
         design_spec = _default_design_spec(project_domain)
 
     # project_domain이 누락된 경우 보완
@@ -344,12 +378,12 @@ Frontend 에이전트가 이 ui_components 데이터로 DOM 요소를 구성합�
     # GAME인데 pixel_sprites가 없으면 기본값 보완
     if is_game and "pixel_sprites" not in design_spec:
         design_spec["pixel_sprites"] = _default_design_spec("GAME")["pixel_sprites"]
-        print(f"  ⚠️  pixel_sprites 누락 → 기본 스프라이트 삽입")
+        build_log(state, "⚠️  pixel_sprites 누락 → 기본 스프라이트 삽입")
 
     # APP인데 ui_components가 없으면 기본값 보완
     if not is_game and "ui_components" not in design_spec:
         design_spec["ui_components"] = _default_design_spec("APP")["ui_components"]
-        print(f"  ⚠️  ui_components 누락 → 기본 컴포넌트 삽입")
+        build_log(state, "⚠️  ui_components 누락 → 기본 컴포넌트 삽입")
 
     # design_spec.json을 codes에 추가해 output 디렉토리에 함께 저장
     codes = state.get("codes", {})

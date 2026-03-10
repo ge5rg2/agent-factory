@@ -3,7 +3,7 @@ import os
 import json
 import re
 from dotenv import load_dotenv
-from agents.utils import staff_log
+from agents.utils import staff_log, build_log
 
 load_dotenv()
 client = genai.Client(
@@ -206,7 +206,7 @@ def frontend_agent(state: dict) -> dict:
         staff_log(state, "FRONTEND", thought)
 
     for file_path, file_description in fe_files.items():
-        print(f"  {'🎮' if is_game else '🎨'}  FE 생성 중: {file_path}")
+        build_log(state, f"{'🎮' if is_game else '🎨'}  FE 생성 중: {file_path}")
 
         existing_codes_context = ""
         if codes:
@@ -217,6 +217,101 @@ def frontend_agent(state: dict) -> dict:
 
         # 현재 파일의 인터페이스 계약
         current_contract = interface_contracts.get(file_path, "")
+
+        # ── 파일 유형별 Anti-Smashing / ESM 규칙 ───────────────────────────
+        is_html = file_path.endswith(".html")
+        is_entry_js = file_path in ("src/index.js", "index.js")
+
+        if is_html:
+            file_specific_rules = """
+=== [⛔ index.html 엄격 규칙 — Anti-Smashing] ===
+이 파일은 순수한 진입점(entry point)입니다. 비즈니스 로직을 절대 포함하지 마세요.
+
+✅ 허용:
+  - HTML 구조 태그 (<html>, <head>, <body>, 시맨틱 태그)
+  - CDN <link> / <script src="https://..."> (Tailwind, Lucide 등 외부 라이브러리)
+  - <script type="module" src="src/index.js"></script> — 단 하나의 모듈 진입점
+  - 최소한의 레이아웃 마크업 (빈 컨테이너 div 등)
+
+❌ 절대 금지:
+  - <script> 태그 안에 클래스, 함수, 변수 선언 등 비즈니스 로직
+  - onclick=, onload=, onsubmit= 같은 인라인 이벤트 핸들러
+  - 200줄 이상의 인라인 <script> 블록
+  - window.xxx = ... 전역 변수 할당
+  - import/export 없는 <script type="module"> 내 비즈니스 로직
+
+올바른 예시:
+```html
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>앱 제목</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+</head>
+<body>
+  <div id="app"></div>
+  <script type="module" src="src/index.js"></script>
+</body>
+</html>
+```"""
+        elif is_entry_js:
+            file_specific_rules = """
+=== [📌 index.js 진입점 규칙] ===
+이 파일은 앱 초기화 진입점입니다. 모듈을 조합하고 실행을 시작하는 역할만 합니다.
+
+✅ 필수 패턴:
+  - 다른 모듈에서 필요한 것들을 import
+  - 최상위 Game/App 클래스 인스턴스 생성 후 start()
+  - DOMContentLoaded 또는 window.onload 이벤트로 진입점 보호
+
+✅ 예시:
+```javascript
+import { Game } from './core/game.js';
+
+window.addEventListener('DOMContentLoaded', () => {
+  const game = new Game(document.getElementById('canvas'));
+  game.start();
+});
+```
+
+❌ 절대 금지:
+  - 클래스/함수 정의를 이 파일에 직접 작성 (다른 파일에 분리하고 import할 것)
+  - window.xxx = ... 전역 변수
+  - 100줄 이상의 비즈니스 로직"""
+        else:
+            file_specific_rules = f"""
+=== [📦 ESM 모듈 파일 규칙] ===
+이 파일은 독립적인 ES Module입니다. 아래 규칙을 엄격히 준수하세요.
+
+✅ 필수:
+  - 공개 심볼은 반드시 export: `export class Foo`, `export function bar`, `export const BAZ`
+  - 다른 모듈 의존: `import {{ X }} from './relative-path.js'` (상대경로 + .js 확장자 필수)
+  - 클래스 상태는 this.xxx 인스턴스 변수로 관리
+  - 의존 객체는 생성자 파라미터로 주입 받기 (DI 패턴)
+
+❌ 절대 금지:
+  - `window.xxx = ...` (전역 네임스페이스 오염)
+  - 최상위 스코프 `var/let/const` 선언 (export 없이) — 이것도 전역 오염입니다
+  - `require()`, `module.exports` (CommonJS 방식)
+  - 다른 모듈의 내부 구현에 직접 접근 (계약된 public API만 사용)
+
+올바른 예시:
+```javascript
+import {{ Map }} from './map.js';
+import {{ Vector2 }} from '../utils/vector2.js';
+
+export class Player {{
+  constructor(map, config) {{  // 의존성 주입
+    this.map = map;
+    this.pos = new Vector2(config.startX, config.startY);
+    this.speed = config.speed ?? 3;
+  }}
+  update(dt) {{ ... }}
+  getPosition() {{ return this.pos; }}
+}}
+```"""
 
         prompt = f"""
 당신은 시니어 프론트엔드 개발자입니다.
@@ -244,6 +339,7 @@ def frontend_agent(state: dict) -> dict:
 [중요] 의존성 주입: 클래스 생성 시 계약에 명시된 생성자 파라미터를 반드시 전달하세요.
   예) new Player(map, config) — map과 config를 직접 생성해서 전달
 {domain_section}
+{file_specific_rules}
 
 === 현재 작성할 파일 ===
 파일 경로: {file_path}
@@ -253,10 +349,9 @@ def frontend_agent(state: dict) -> dict:
 1. 실제로 실행 가능한 완전한 코드를 작성하세요 (절대 잘리거나 생략하지 마세요)
 2. [매우 중요] 이미지 파일(img 태그 src, background-image url()) 절대 사용 금지
 3. [매우 중요 — Strict DI] 전역 변수 사용 절대 금지:
-   - ❌ 금지: window.player, window.map, global let player, var game (전역 스코프)
+   - ❌ 금지: window.player, window.map, 최상위 let player, var game (export 없는 최상위 선언)
    - ✅ 필수: 모든 상태는 최상위 Game/App 클래스가 보유하고, 하위 인스턴스에 생성자로 전달
    - 예시: class Game {{ constructor() {{ this.map = new Map(LEVEL_1); this.player = new Player(this.map, config); }} }}
-   - Game/App 외부에서 참조가 필요한 경우 getter 메서드나 이벤트로 전달
 4. 주석 최소화, 코드 자체가 명확하도록 작성
 5. 백엔드 API 연동 시: fetch API 사용, baseURL = 'http://localhost:8000'
 {"6. Canvas 렌더링: pixel_sprites 데이터를 사용해 drawSprite 함수로 렌더링" if is_game else "6. Tailwind CDN + Lucide CDN 로드 후 lucide.createIcons() 호출"}
