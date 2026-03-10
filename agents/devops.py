@@ -1,9 +1,14 @@
 """DevOps 에이전트 — 빌드된 프로젝트를 즉시 배포.
 
-지원 플랫폼 (DEPLOY_PLATFORM 환경변수로 선택):
-  vercel  — Vercel API v13 직접 업로드 (frontend_only에 최적)
-  railway — Railway CLI 기반 배포 (fullstack에 최적)
-  (미설정) — 배포 건너뜀
+플랫폼 선택 전략 (자동 감지 + 수동 오버라이드):
+  1. DEPLOY_PLATFORM 환경변수가 설정된 경우 → 해당 플랫폼 사용 (수동 오버라이드)
+  2. DEPLOY_PLATFORM 미설정 시 PM이 결정한 project_type 기반 자동 선택:
+       frontend_only          → vercel  (정적 파일 직접 배포에 최적)
+       fullstack/backend_only → railway (컨테이너 풀스택 배포에 최적)
+
+두 토큰을 모두 환경변수에 설정해두면 PM 판단에 따라 자동으로 적합한 플랫폼이 선택됩니다:
+  VERCEL_TOKEN  — Vercel 배포 시 필요 (frontend_only 프로젝트)
+  RAILWAY_TOKEN — Railway 배포 시 필요 (fullstack / backend_only 프로젝트)
 
 배포 URL은 state['deploy_url']에 저장됩니다.
 """
@@ -149,7 +154,11 @@ def _deploy_railway(output_dir: str, project_name: str, token: str) -> str:
 # ── DevOps Agent 메인 ─────────────────────────────────────────────────────────
 
 def devops_agent(state: dict) -> dict:
-    """빌드 결과물을 DEPLOY_PLATFORM에 따라 즉시 배포하는 에이전트.
+    """빌드 결과물을 project_type 기반으로 자동 선택된 플랫폼에 즉시 배포하는 에이전트.
+
+    플랫폼 선택 우선순위:
+      1. DEPLOY_PLATFORM 환경변수 (수동 오버라이드)
+      2. project_type 자동 매핑: frontend_only → vercel, fullstack/backend_only → railway
 
     배포 성공 시: state['deploy_url'] 저장, state['current_step'] = 'DONE'
     배포 건너뜀:  state['deploy_url'] = None, state['current_step'] = 'DONE'
@@ -159,19 +168,32 @@ def devops_agent(state: dict) -> dict:
     project_type = state.get("project_type", "fullstack")
     output_dir = os.path.join("output", project_name)
 
-    # ── DEPLOY_PLATFORM 미설정 → 배포 건너뜀 ────────────────────────────────
-    if not _DEPLOY_PLATFORM:
-        staff_log(state, "DEVOPS", "배포 플랫폼이 설정되지 않아 로컬 output/ 디렉토리에만 저장합니다. DEPLOY_PLATFORM 환경변수를 설정하면 자동 배포가 활성화됩니다.")
-        _log(state, "⏭️  DEPLOY_PLATFORM 미설정 → 배포 건너뜀 (로컬 output/ 디렉토리 사용)")
+    # ── 플랫폼 결정: 수동 오버라이드 > project_type 자동 매핑 ─────────────────
+    if _DEPLOY_PLATFORM:
+        platform = _DEPLOY_PLATFORM                           # 수동 설정 우선
+        _log(state, f"🔧 배포 플랫폼 수동 지정: {platform.upper()}")
+    elif project_type == "frontend_only":
+        platform = "vercel"                                   # 정적 파일 → Vercel
+        _log(state, f"🤖 project_type=frontend_only → Vercel 자동 선택")
+    elif project_type in ("fullstack", "backend_only"):
+        platform = "railway"                                  # 풀스택/백엔드 → Railway
+        _log(state, f"🤖 project_type={project_type} → Railway 자동 선택")
+    else:
+        platform = ""
+
+    if not platform:
+        staff_log(state, "DEVOPS", "배포 플랫폼을 결정할 수 없어 로컬 output/ 디렉토리에만 저장합니다. VERCEL_TOKEN 또는 RAILWAY_TOKEN을 설정하면 자동 배포가 활성화됩니다.")
+        _log(state, "⏭️  배포 플랫폼 미결정 → 건너뜀 (로컬 output/ 디렉토리 사용)")
         state.update({"deploy_url": None, "current_step": "DONE"})
         return state
 
-    staff_log(state, "DEVOPS", f"배포 환경을 구성하고 있습니다. {_DEPLOY_PLATFORM.upper()} 플랫폼에 빌드 산출물을 업로드할 준비를 합니다.")
-    _log(state, f"🚀 배포 시작: platform={_DEPLOY_PLATFORM.upper()}, project={project_name}")
+    staff_log(state, "DEVOPS", f"배포 환경을 구성하고 있습니다. PM이 결정한 {project_type} 프로젝트 → {platform.upper()} 플랫폼에 빌드 산출물을 업로드합니다.")
+    _log(state, f"🚀 배포 시작: platform={platform.upper()}, project={project_name}")
 
-    # ── Vercel 배포 (frontend_only 권장) ─────────────────────────────────────
-    if _DEPLOY_PLATFORM == "vercel":
+    # ── Vercel 배포 (frontend_only 자동 선택) ────────────────────────────────
+    if platform == "vercel":
         if not _VERCEL_TOKEN:
+            staff_log(state, "DEVOPS", "VERCEL_TOKEN이 설정되지 않았습니다. .env 파일에 VERCEL_TOKEN을 추가해 주세요.")
             _log(state, "⚠️  VERCEL_TOKEN 미설정 → 배포 건너뜀")
             state.update({"deploy_url": None, "current_step": "DONE"})
             return state
@@ -180,7 +202,7 @@ def devops_agent(state: dict) -> dict:
             _log(state, f"  ℹ️  project_type={project_type} — Vercel은 정적 파일만 배포합니다 (백엔드 코드 제외)")
 
         try:
-            staff_log(state, "DEVOPS", f"총 파일을 Vercel 서버에 업로드하는 중입니다. SHA1 중복 제거로 변경된 파일만 전송됩니다.")
+            staff_log(state, "DEVOPS", "파일을 Vercel 서버에 업로드하는 중입니다. SHA1 중복 제거로 변경된 파일만 전송됩니다.")
             _log(state, f"  📤 파일 업로드 중: {output_dir}/")
             deploy_url = _deploy_vercel(output_dir, project_name, _VERCEL_TOKEN)
             staff_log(state, "DEVOPS", f"배포가 완료되었습니다! 서비스가 곧 접속 가능합니다: {deploy_url}")
@@ -188,13 +210,14 @@ def devops_agent(state: dict) -> dict:
             state.update({"deploy_url": deploy_url, "current_step": "DONE"})
 
         except Exception as e:
-            staff_log(state, "DEVOPS", f"Vercel 배포 중 오류가 발생했습니다. 로컬 output/ 디렉토리에서 수동으로 배포해 주세요.")
+            staff_log(state, "DEVOPS", "Vercel 배포 중 오류가 발생했습니다. 로컬 output/ 디렉토리에서 수동으로 배포해 주세요.")
             _log(state, f"  ❌ Vercel 배포 실패: {e}")
             state.update({"deploy_url": None, "current_step": "DONE"})
 
-    # ── Railway 배포 (fullstack 권장) ────────────────────────────────────────
-    elif _DEPLOY_PLATFORM == "railway":
+    # ── Railway 배포 (fullstack/backend_only 자동 선택) ──────────────────────
+    elif platform == "railway":
         if not _RAILWAY_TOKEN:
+            staff_log(state, "DEVOPS", "RAILWAY_TOKEN이 설정되지 않았습니다. .env 파일에 RAILWAY_TOKEN을 추가해 주세요.")
             _log(state, "⚠️  RAILWAY_TOKEN 미설정 → 배포 건너뜀")
             state.update({"deploy_url": None, "current_step": "DONE"})
             return state
@@ -208,13 +231,13 @@ def devops_agent(state: dict) -> dict:
             state.update({"deploy_url": deploy_url, "current_step": "DONE"})
 
         except Exception as e:
-            staff_log(state, "DEVOPS", f"Railway 배포 중 오류가 발생했습니다. Railway CLI 설치 여부를 확인해 주세요.")
+            staff_log(state, "DEVOPS", "Railway 배포 중 오류가 발생했습니다. Railway CLI 설치 여부를 확인해 주세요.")
             _log(state, f"  ❌ Railway 배포 실패: {e}")
             _log(state, "  💡 Railway CLI가 설치되어 있는지 확인하세요: npm install -g @railway/cli")
             state.update({"deploy_url": None, "current_step": "DONE"})
 
     else:
-        _log(state, f"⚠️  알 수 없는 DEPLOY_PLATFORM: '{_DEPLOY_PLATFORM}' (vercel | railway 중 선택)")
+        _log(state, f"⚠️  알 수 없는 배포 플랫폼: '{platform}' (vercel | railway 중 선택)")
         state.update({"deploy_url": None, "current_step": "DONE"})
 
     return state
