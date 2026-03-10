@@ -5,6 +5,7 @@ import json
 import re
 import subprocess
 from dotenv import load_dotenv
+from agents.utils import staff_log
 
 load_dotenv()
 client = genai.Client(
@@ -583,6 +584,7 @@ A4. Lucide 아이콘 초기화
 
 반드시 아래 JSON 형식으로만 답변하세요 (다른 텍스트 없이 JSON만):
 {{
+    "thought": "이 코드베이스의 핵심 문제와 QC 접근 전략 (1-2문장)",
     "issues": ["발견된 문제 설명 1", "발견된 문제 설명 2"],
     "fixed_files": {{
         "수정이_필요한_파일경로": "수정된_전체_코드"
@@ -723,6 +725,11 @@ def qc_agent(state: dict) -> dict:
         except (json.JSONDecodeError, Exception) as e:
             print(f"  ⚠️  Gemini 리뷰 파싱 실패: {e}")
             break
+
+        if iteration == 1:
+            thought = result.get("thought", "")
+            if thought:
+                staff_log(state, "QC", thought)
 
         issues = result.get("issues", [])
         fixed_files = result.get("fixed_files", {})

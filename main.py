@@ -263,18 +263,25 @@ def _run_phases_2_to_6(state: dict, log_path: str, from_phase: str = "PM_DONE") 
 
 
 def _flush_build_log(state: dict, output_dir: str) -> None:
-    """전체 history를 output_dir/.build_log.txt에 최종 기록."""
-    history = state.get("history", [])
-    if not history:
-        return
+    """전체 history를 output_dir/.build_log.txt에 최종 기록, staff_logs를 staff_logs.json에 저장."""
     os.makedirs(output_dir, exist_ok=True)
-    log_file = os.path.join(output_dir, ".build_log.txt")
-    with open(log_file, "w", encoding="utf-8") as f:
-        f.write(f"# Build Log — {state.get('project_name', '')}\n")
-        f.write(f"# Generated: {datetime.now().isoformat()}\n\n")
-        for line in history:
-            f.write(line + "\n")
-    print(f"  📝 빌드 로그: {log_file}")
+
+    history = state.get("history", [])
+    if history:
+        log_file = os.path.join(output_dir, ".build_log.txt")
+        with open(log_file, "w", encoding="utf-8") as f:
+            f.write(f"# Build Log — {state.get('project_name', '')}\n")
+            f.write(f"# Generated: {datetime.now().isoformat()}\n\n")
+            for line in history:
+                f.write(line + "\n")
+        print(f"  📝 빌드 로그: {log_file}")
+
+    staff_logs = state.get("staff_logs", [])
+    if staff_logs:
+        staff_log_file = os.path.join(output_dir, "staff_logs.json")
+        with open(staff_log_file, "w", encoding="utf-8") as f:
+            json.dump(staff_logs, f, ensure_ascii=False, indent=2)
+        print(f"  💭 Staff 로그: {staff_log_file} ({len(staff_logs)}건)")
 
 
 # ── 신규 빌드 ─────────────────────────────────────────────────────────────────
@@ -299,6 +306,7 @@ def run_new_build() -> None:
         "log_path": None,
         "history": [],
         "deploy_url": None,
+        "staff_logs": [],
     }
 
     # ── Phase 1: PM Agent ─────────────────────────────────────────────────────
@@ -453,6 +461,7 @@ def run_upgrade() -> None:
         "log_path": None,
         "history": [],
         "deploy_url": existing_deploy_url,  # 기존 URL 보존 (재배포 시 업데이트)
+        "staff_logs": [],
     }
 
     # ── Phase 1: PM Upgrade Agent ─────────────────────────────────────────────
