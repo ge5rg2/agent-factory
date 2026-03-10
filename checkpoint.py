@@ -24,6 +24,7 @@ PHASE_LABELS = {
     "FRONTEND_DONE":  "Frontend 완료 → Backend 재개 가능",
     "BACKEND_DONE":   "Backend 완료 → 저장 & QC 재개 가능",
     "DISK_SAVED":     "저장 완료 → QC 재개 가능",
+    "DEPLOY_DONE":    "배포 완료 → 모든 단계 종료",
 }
 
 

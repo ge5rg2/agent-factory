@@ -3,6 +3,7 @@ from agents.designer import designer_agent
 from agents.frontend import frontend_agent
 from agents.backend import backend_agent
 from agents.qc import qc_agent
+from agents.devops import devops_agent
 from checkpoint import (
     save_checkpoint,
     list_active_checkpoints,
@@ -12,6 +13,7 @@ from checkpoint import (
 )
 import json
 import os
+from datetime import datetime
 
 
 _FRONTEND_EXTENSIONS = {".html", ".css", ".js", ".ts", ".tsx", ".jsx", ".vue", ".svelte"}
@@ -41,6 +43,23 @@ def _save_codes_to_disk(output_dir: str, codes: dict) -> None:
             os.makedirs(parent_dir, exist_ok=True)
         with open(full_path, "w", encoding="utf-8") as f:
             f.write(code)
+
+
+def _append_history(state: dict, message: str) -> None:
+    """타임스탬프와 함께 state['history']에 이벤트를 기록하고 로그 파일에도 씁니다."""
+    ts = datetime.now().strftime("%H:%M:%S")
+    line = f"[{ts}] {message}"
+    history = state.setdefault("history", [])
+    history.append(line)
+
+    # 로그 파일에도 기록 (output/{project_name}/.build_log.txt)
+    project_name = state.get("project_name", "")
+    if project_name:
+        log_dir = os.path.join("output", project_name)
+        os.makedirs(log_dir, exist_ok=True)
+        log_file = os.path.join(log_dir, ".build_log.txt")
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
 
 
 def _save_factory_meta(project_dir: str, meta: dict) -> None:
@@ -76,10 +95,10 @@ def _read_project_codes(project_dir: str) -> dict:
     return codes
 
 
-# ── 신규 빌드 공통 후반부 (Phase 2~5) ─────────────────────────────────────────
+# ── 신규 빌드 공통 후반부 (Phase 2~6) ─────────────────────────────────────────
 
-def _run_phases_2_to_5(state: dict, log_path: str, from_phase: str = "PM_DONE") -> None:
-    """Designer → Frontend → Backend → (저장) → QC 단계 실행.
+def _run_phases_2_to_6(state: dict, log_path: str, from_phase: str = "PM_DONE") -> None:
+    """Designer → Frontend → Backend → (저장) → QC → DevOps 단계 실행.
 
     from_phase 인자로 중간 단계부터 재개할 수 있습니다.
     """
@@ -92,14 +111,14 @@ def _run_phases_2_to_5(state: dict, log_path: str, from_phase: str = "PM_DONE") 
     # ── Phase 2: Designer Agent ───────────────────────────────────────────────
     if not skip_designer:
         print("\n" + "-" * 60)
-        print("🎨 [Phase 2/5] Designer Agent - UI/UX 디자인 스펙 설계 중...")
+        print("🎨 [Phase 2/6] Designer Agent - UI/UX 디자인 스펙 설계 중...")
         print("-" * 60)
+        _append_history(state, "Phase 2: Designer Agent 시작")
 
         state = designer_agent(state)
 
         design_spec = state.get("design_spec", {})
         theme = design_spec.get("theme", {})
-        canvas_on = design_spec.get("canvas", {}).get("use_canvas", False)
         domain = design_spec.get("project_domain", state.get("project_domain", "APP"))
         has_sprites = "pixel_sprites" in design_spec
         has_ui_comps = "ui_components" in design_spec
@@ -113,6 +132,7 @@ def _run_phases_2_to_5(state: dict, log_path: str, from_phase: str = "PM_DONE") 
             comp_count = len(design_spec.get("ui_components", {}))
             print(f"  🧩 UI Components: {comp_count}개 {'✅' if has_ui_comps else '⚠️ 기본값'}")
 
+        _append_history(state, f"Phase 2 완료: domain={domain}, primary={theme.get('primary', '-')}")
         log_path = save_checkpoint(state, "DESIGNER_DONE")
     else:
         print("\n  ⏭️  [Phase 2] Designer 체크포인트 재사용 (건너뜀)")
@@ -120,8 +140,9 @@ def _run_phases_2_to_5(state: dict, log_path: str, from_phase: str = "PM_DONE") 
     # ── Phase 3: Frontend Agent ───────────────────────────────────────────────
     if not skip_frontend:
         print("\n" + "-" * 60)
-        print("💻 [Phase 3/5] Frontend Agent - 프론트엔드 코드 생성 중...")
+        print("💻 [Phase 3/6] Frontend Agent - 프론트엔드 코드 생성 중...")
         print("-" * 60)
+        _append_history(state, "Phase 3: Frontend Agent 시작")
 
         state = frontend_agent(state)
 
@@ -131,6 +152,7 @@ def _run_phases_2_to_5(state: dict, log_path: str, from_phase: str = "PM_DONE") 
 
         fe_files = [p for p in state["codes"] if _is_frontend(p)]
         print(f"\n✅ FE 코드 생성 완료! ({len(fe_files)}개 파일)")
+        _append_history(state, f"Phase 3 완료: FE 파일 {len(fe_files)}개 생성 — {', '.join(fe_files[:5])}")
 
         log_path = save_checkpoint(state, "FRONTEND_DONE")
     else:
@@ -139,8 +161,9 @@ def _run_phases_2_to_5(state: dict, log_path: str, from_phase: str = "PM_DONE") 
     # ── Phase 4: Backend Agent ────────────────────────────────────────────────
     if not skip_backend:
         print("\n" + "-" * 60)
-        print("⚙️  [Phase 4/5] Backend Agent - 백엔드 코드 생성 중...")
+        print("⚙️  [Phase 4/6] Backend Agent - 백엔드 코드 생성 중...")
         print("-" * 60)
+        _append_history(state, "Phase 4: Backend Agent 시작")
 
         state = backend_agent(state)
 
@@ -150,6 +173,7 @@ def _run_phases_2_to_5(state: dict, log_path: str, from_phase: str = "PM_DONE") 
 
         be_files = [p for p in state["codes"] if not _is_frontend(p)]
         print(f"\n✅ BE 코드 생성 완료! ({len(be_files)}개 파일)")
+        _append_history(state, f"Phase 4 완료: BE 파일 {len(be_files)}개 생성")
 
         log_path = save_checkpoint(state, "BACKEND_DONE")
     else:
@@ -166,6 +190,7 @@ def _run_phases_2_to_5(state: dict, log_path: str, from_phase: str = "PM_DONE") 
             "prd": state["prd"],
             "file_tree": state["file_tree"],
             "interface_contracts": state.get("interface_contracts", {}),
+            "deploy_url": state.get("deploy_url"),
         })
         log_path = save_checkpoint(state, "DISK_SAVED")
 
@@ -176,6 +201,7 @@ def _run_phases_2_to_5(state: dict, log_path: str, from_phase: str = "PM_DONE") 
             lines = len(code.splitlines())
             role = "🎨 FE" if _is_frontend(file_path) else "⚙️  BE"
             print(f"  {role}  {file_path} ({lines} lines)")
+        _append_history(state, f"디스크 저장 완료: {len(state['codes'])}개 파일 → {output_dir}/")
     else:
         # disk에서 codes 재로드 (QC 용)
         if not state.get("codes"):
@@ -184,8 +210,9 @@ def _run_phases_2_to_5(state: dict, log_path: str, from_phase: str = "PM_DONE") 
 
     # ── Phase 5: QC Agent ─────────────────────────────────────────────────────
     print("\n" + "-" * 60)
-    print("🔍 [Phase 5/5] QC Agent - 코드 검증 및 자동 수정 중...")
+    print("🔍 [Phase 5/6] QC Agent - 코드 검증 및 자동 수정 중...")
     print("-" * 60)
+    _append_history(state, "Phase 5: QC Agent 시작")
 
     state = qc_agent(state)
 
@@ -194,6 +221,35 @@ def _run_phases_2_to_5(state: dict, log_path: str, from_phase: str = "PM_DONE") 
         return
 
     print("\n" + state["feedback"])
+    _append_history(state, "Phase 5 완료: QC 검증 통과")
+
+    # ── Phase 6: DevOps Agent ─────────────────────────────────────────────────
+    print("\n" + "-" * 60)
+    print("🚀 [Phase 6/6] DevOps Agent - 배포 중...")
+    print("-" * 60)
+    _append_history(state, "Phase 6: DevOps Agent 시작")
+
+    state = devops_agent(state)
+
+    deploy_url = state.get("deploy_url")
+    if deploy_url:
+        _append_history(state, f"Phase 6 완료: 배포 URL = {deploy_url}")
+        # 배포 URL을 메타에 업데이트
+        _save_factory_meta(output_dir, {
+            "idea": state.get("idea", ""),
+            "project_name": state["project_name"],
+            "project_type": state.get("project_type", ""),
+            "project_domain": state.get("project_domain", "APP"),
+            "prd": state["prd"],
+            "file_tree": state["file_tree"],
+            "interface_contracts": state.get("interface_contracts", {}),
+            "deploy_url": deploy_url,
+        })
+    else:
+        _append_history(state, "Phase 6: 배포 건너뜀 (로컬 저장만)")
+
+    # ── 빌드 로그 최종 저장 ────────────────────────────────────────────────────
+    _flush_build_log(state, output_dir)
 
     # ── 정상 완료: 체크포인트 아카이브 ────────────────────────────────────────
     archive_checkpoint(log_path)
@@ -201,7 +257,24 @@ def _run_phases_2_to_5(state: dict, log_path: str, from_phase: str = "PM_DONE") 
     print("\n" + "=" * 60)
     print("🎉 MVP 생성 완료!")
     print(f"📂 결과물 위치: {output_dir}/")
+    if deploy_url:
+        print(f"🌐 배포 URL: {deploy_url}")
     print("=" * 60)
+
+
+def _flush_build_log(state: dict, output_dir: str) -> None:
+    """전체 history를 output_dir/.build_log.txt에 최종 기록."""
+    history = state.get("history", [])
+    if not history:
+        return
+    os.makedirs(output_dir, exist_ok=True)
+    log_file = os.path.join(output_dir, ".build_log.txt")
+    with open(log_file, "w", encoding="utf-8") as f:
+        f.write(f"# Build Log — {state.get('project_name', '')}\n")
+        f.write(f"# Generated: {datetime.now().isoformat()}\n\n")
+        for line in history:
+            f.write(line + "\n")
+    print(f"  📝 빌드 로그: {log_file}")
 
 
 # ── 신규 빌드 ─────────────────────────────────────────────────────────────────
@@ -224,6 +297,8 @@ def run_new_build() -> None:
         "current_step": "PLANNING",
         "mode": "new",
         "log_path": None,
+        "history": [],
+        "deploy_url": None,
     }
 
     # ── Phase 1: PM Agent ─────────────────────────────────────────────────────
@@ -250,11 +325,13 @@ def run_new_build() -> None:
         print(f"  📄 {file_path}")
         print(f"      └─ {description}")
 
+    _append_history(state, f"Phase 1 완료: domain={domain}, type={state.get('project_type', '')}, 파일 {len(state['file_tree'])}개")
+
     # ── 체크포인트: PM 완료 ───────────────────────────────────────────────────
     log_path = save_checkpoint(state, "PM_DONE")
     print(f"\n  💾 체크포인트 저장: {log_path}")
 
-    _run_phases_2_to_5(state, log_path, from_phase="PM_DONE")
+    _run_phases_2_to_6(state, log_path, from_phase="PM_DONE")
 
 
 # ── 체크포인트 복구 ───────────────────────────────────────────────────────────
@@ -272,16 +349,16 @@ def run_resume(checkpoint: dict) -> None:
     print(f"  📍 재개 지점: {PHASE_LABELS.get(phase, phase)}")
 
     if phase == "PM_DONE":
-        _run_phases_2_to_5(state, log_path, from_phase="PM_DONE")
+        _run_phases_2_to_6(state, log_path, from_phase="PM_DONE")
 
     elif phase == "DESIGNER_DONE":
-        _run_phases_2_to_5(state, log_path, from_phase="DESIGNER_DONE")
+        _run_phases_2_to_6(state, log_path, from_phase="DESIGNER_DONE")
 
     elif phase == "FRONTEND_DONE":
-        _run_phases_2_to_5(state, log_path, from_phase="FRONTEND_DONE")
+        _run_phases_2_to_6(state, log_path, from_phase="FRONTEND_DONE")
 
     elif phase in ("BACKEND_DONE",):
-        _run_phases_2_to_5(state, log_path, from_phase="BACKEND_DONE")
+        _run_phases_2_to_6(state, log_path, from_phase="BACKEND_DONE")
 
     elif phase == "DISK_SAVED":
         # codes가 이미 disk에 있으므로 QC만 재실행
@@ -354,6 +431,12 @@ def run_upgrade() -> None:
         print("⚠️  요청사항을 입력하세요.")
         return
 
+    # 기존 배포 URL 복원 (Safe-Update: 동일 환경 재배포)
+    existing_deploy_url = meta.get("deploy_url")
+    if existing_deploy_url:
+        print(f"\n  🌐 기존 배포 URL 감지: {existing_deploy_url}")
+        print(f"  ♻️  업그레이드 후 동일 플랫폼에 재배포됩니다.")
+
     state = {
         "idea": meta.get("idea", ""),
         "project_name": project_name,
@@ -368,6 +451,8 @@ def run_upgrade() -> None:
         "current_step": "UPGRADE_PLANNING",
         "mode": "upgrade",
         "log_path": None,
+        "history": [],
+        "deploy_url": existing_deploy_url,  # 기존 URL 보존 (재배포 시 업데이트)
     }
 
     # ── Phase 1: PM Upgrade Agent ─────────────────────────────────────────────
@@ -454,6 +539,7 @@ def run_upgrade() -> None:
         "prd": state["prd"],
         "file_tree": merged_file_tree,
         "interface_contracts": state.get("interface_contracts", meta.get("interface_contracts", {})),
+        "deploy_url": state.get("deploy_url"),  # 기존 URL 보존
     })
 
     state["file_tree"] = merged_file_tree
@@ -463,19 +549,52 @@ def run_upgrade() -> None:
     for path in delta_file_tree:
         lines = len(state["codes"].get(path, "").splitlines())
         print(f"  ✅ {path} ({lines} lines)")
+    _append_history(state, f"업그레이드 저장 완료: 델타 {len(delta_file_tree)}개 파일")
 
     # ── Phase 5: QC Agent ─────────────────────────────────────────────────────
     print("\n" + "-" * 60)
-    print("🔍 [Phase 5/5] QC Agent - 코드 검증 및 자동 수정 중...")
+    print("🔍 [Phase 5/6] QC Agent - 코드 검증 및 자동 수정 중...")
     print("-" * 60)
+    _append_history(state, "Phase 5: QC Agent 시작 (업그레이드)")
 
     state = qc_agent(state)
 
     print("\n" + state["feedback"])
+    _append_history(state, "Phase 5 완료: QC 검증 통과")
+
+    # ── Phase 6: DevOps 재배포 (Safe-Update) ─────────────────────────────────
+    print("\n" + "-" * 60)
+    print("🚀 [Phase 6/6] DevOps Agent - 업그레이드 재배포 중...")
+    print("-" * 60)
+    _append_history(state, "Phase 6: DevOps 재배포 시작 (Safe-Update)")
+
+    state = devops_agent(state)
+
+    new_deploy_url = state.get("deploy_url")
+    if new_deploy_url:
+        _append_history(state, f"Phase 6 완료: 재배포 URL = {new_deploy_url}")
+        # 업데이트된 URL을 메타에 저장
+        _save_factory_meta(project_dir, {
+            "idea": meta.get("idea", ""),
+            "project_name": project_name,
+            "project_type": state.get("project_type", meta.get("project_type", "")),
+            "project_domain": state.get("project_domain", meta.get("project_domain", "APP")),
+            "prd": state["prd"],
+            "file_tree": merged_file_tree,
+            "interface_contracts": state.get("interface_contracts", meta.get("interface_contracts", {})),
+            "deploy_url": new_deploy_url,
+        })
+    else:
+        _append_history(state, "Phase 6: 배포 건너뜀 (로컬 저장만)")
+
+    # 빌드 로그 최종 저장
+    _flush_build_log(state, project_dir)
 
     print("\n" + "=" * 60)
     print("🎉 프로젝트 고도화 완료!")
     print(f"📂 결과물 위치: {project_dir}/")
+    if new_deploy_url:
+        print(f"🌐 배포 URL: {new_deploy_url}")
     print("=" * 60)
 
 
