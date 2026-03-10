@@ -65,6 +65,24 @@ def pm_agent(state: dict):
      * APP 예시: class ApiClient {{ constructor(baseUrl: string): void; get(endpoint: string): Promise; }}
    - 파일 간 인터페이스 불일치가 런타임 에러의 주요 원인입니다. 모든 주요 클래스에 계약 작성 필수
    - undefined 참조 에러를 원천 차단하려면 필요한 모든 의존성을 생성자 파라미터로 명시하세요
+8. [빌드 도구 금지 원칙] 이 프로젝트는 빌드 과정 없이 브라우저/런타임에서 직접 실행됩니다
+   - ❌ 절대 금지: webpack, vite, rollup, esbuild, parcel, tsc (TypeScript 컴파일러), babel, npm scripts
+   - ❌ 절대 금지: package.json, node_modules, tsconfig.json (빌드 관련 파일 일체)
+   - ✅ 프론트엔드: 브라우저 네이티브 ESM (ES Modules) 으로 직접 실행
+   - ✅ React/Vue 필요 시: CDN import-map 또는 <script type="importmap"> 으로 CDN에서 로드
+   - ✅ TypeScript 불필요: 순수 JavaScript (ES2022+) 사용
+9. [God File 금지 원칙] 모든 로직을 index.html 또는 단일 파일에 몰아 넣지 마세요
+   - ❌ 절대 금지: index.html 안에 200줄 이상의 <script> 인라인 비즈니스 로직
+   - ❌ 절대 금지: 단일 app.js에 모든 클래스/함수 정의
+   - ✅ 필수: 역할별로 파일 분리 — index.html은 진입점(entry point)만, 로직은 src/ 디렉토리 하위 파일들에
+   - ✅ index.html 규칙: `<script type="module" src="src/index.js"></script>` 단 한 줄만 허용
+   - ✅ src/index.js: 앱 초기화 진입점 역할만 (import로 모듈 조합), 100줄 이내 권장
+10. [ESM 모듈 시스템] 모든 JS 파일은 ES Modules 방식을 사용합니다
+    - ✅ 공개 심볼: `export class Foo`, `export function bar`, `export const BAZ`
+    - ✅ 의존성 로드: `import {{ Foo }} from './foo.js'` (상대경로 + .js 확장자 필수)
+    - ❌ 절대 금지: `window.Foo = ...` (전역 네임스페이스 오염)
+    - ❌ 절대 금지: `var/let/const` 최상위 선언 (export 없이)
+    - ❌ 절대 금지: `require()`, `module.exports` (CommonJS 방식)
 
 반드시 아래 JSON 형식으로만 답변하세요 (다른 텍스트 없이 JSON만):
 {{
@@ -74,10 +92,11 @@ def pm_agent(state: dict):
     "project_domain": "GAME",
     "prd": "기획 상세 내용 - 반드시 문자열로",
     "file_tree": {{
-        "index.html": "메인 HTML 진입점",
-        "src/core/engine.js": "게임 루프 및 렌더링 엔진",
-        "src/entities/player.js": "플레이어 엔티티 (map, config 의존성 주입)",
-        "src/utils/vector2.js": "2D 벡터 수학 유틸리티 클래스"
+        "index.html": "진입점 HTML — <script type='module' src='src/index.js'> 단 한 줄만",
+        "src/index.js": "앱 초기화 진입점 — Game 클래스 import 후 start()",
+        "src/core/engine.js": "게임 루프 및 렌더링 엔진 (export class Engine)",
+        "src/entities/player.js": "플레이어 엔티티 (export class Player, map/config DI)",
+        "src/utils/vector2.js": "2D 벡터 수학 유틸리티 (export class Vector2)"
     }},
     "interface_contracts": {{
         "src/map.js": "class Map {{ constructor(levelData: number[][]): void; isWalkable(x: number, y: number, size: number): bool; getGrid(): number[][]; getWidth(): number; getHeight(): number; }}",
